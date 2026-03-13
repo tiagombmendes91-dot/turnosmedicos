@@ -21,10 +21,7 @@
 <body>
 <div id="root"></div>
 <script>
-  // Make React hooks available globally for the Babel-compiled code
   const { useState, useEffect, useRef } = React;
-  // Make XLSX available globally
-  // (already loaded via CDN as window.XLSX)
 </script>
 <script type="text/babel" data-presets="react">
 
@@ -378,7 +375,7 @@ function AuthScreen({ onLogin }) {
       if (!form.email.includes("@")) { setError("Email inválido."); return; }
       const users = loadUsers();
       if (users.find(u=>u.email===form.email)) { setError("Email já registado."); return; }
-      const newUser = { ...form, initials:form.initials.toUpperCase() };
+      const newUser = { ...form, initials:form.initials.toUpperCase(), role:"doctor" };
       saveUsers([...users, newUser]);
       onLogin(newUser);
     } else {
@@ -422,13 +419,7 @@ function AuthScreen({ onLogin }) {
                   {inp("specialty","Especialidade")}
                   {inp("initials","Sigla","text",{textTransform:"uppercase",maxLength:3})}
                 </div>
-                <div style={{ display:"flex", gap:10 }}>
-                  {["doctor","coordinator"].map(r => (
-                    <button key={r} onClick={() => setForm(p=>({...p,role:r}))} style={{ flex:1, padding:"10px 0", border:`2px solid ${form.role===r?"#4338CA":"#334155"}`, background:form.role===r?"#312E81":"transparent", color:form.role===r?"#A5B4FC":"#64748B", borderRadius:10, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>
-                      {r==="doctor"?"👩‍⚕️ Médico":"📋 Coordenador"}
-                    </button>
-                  ))}
-                </div>
+
               </>
             )}
             {inp("email","Email","email")}
@@ -559,7 +550,7 @@ function DoctorView({ user, year, month, setYear, setMonth, availability, onAvai
 
 // ─── COORDINATOR VIEW ─────────────────────────────────────────────────────────
 
-function CoordinatorView({ user, year, month, setYear, setMonth, doctors, allAvailabilities, schedule, setSchedule, historicShifts, onNotify, onToast }) {
+function CoordinatorView({ user, year, month, setYear, setMonth, allUsers, doctors, allAvailabilities, schedule, setSchedule, historicShifts, onNotify, onToast, onRoleChange }) {
   const days = getDaysInMonth(year, month);
   const firstDay = getFirstDay(year, month);
   const [selectedDay, setSelectedDay] = useState(null);
@@ -567,6 +558,7 @@ function CoordinatorView({ user, year, month, setYear, setMonth, doctors, allAva
   const [autoLog, setAutoLog] = useState(null);
   const [isRunning, setIsRunning] = useState(false);
   const [exporting, setExporting] = useState(null);
+  const [confirmTransfer, setConfirmTransfer] = useState(null);
 
   function handleAutoAssign() {
     setIsRunning(true);
@@ -637,9 +629,9 @@ function CoordinatorView({ user, year, month, setYear, setMonth, doctors, allAva
               {[2025,2026,2027].map(y=><option key={y} value={y}>{y}</option>)}
             </select>
             <div style={{ display:"flex", background:"#1E293B", borderRadius:8, overflow:"hidden", border:"1px solid #4338CA" }}>
-              {["calendar","list"].map(v=>(
+              {[["calendar","📅 Cal."],["list","📋 Lista"],["team","👥 Equipa"]].map(([v,l])=>(
                 <button key={v} onClick={()=>setView(v)} style={{ background:view===v?"#4338CA":"transparent", color:view===v?"#fff":"#94A3B8", border:"none", padding:"7px 12px", cursor:"pointer", fontSize:12, fontFamily:"inherit", fontWeight:600 }}>
-                  {v==="calendar"?"📅 Cal.":"📋 Lista"}
+                  {l}
                 </button>
               ))}
             </div>
@@ -790,7 +782,7 @@ function CoordinatorView({ user, year, month, setYear, setMonth, doctors, allAva
             </div>
           </div>
         </div>
-      ) : (
+      ) : view==="list" ? (
         <div style={{background:"#fff",borderRadius:16,boxShadow:"0 2px 12px rgba(0,0,0,0.06)",overflow:"hidden"}}>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
             <thead>
@@ -830,6 +822,84 @@ function CoordinatorView({ user, year, month, setYear, setMonth, doctors, allAva
             </tbody>
           </table>
         </div>
+      ) : (
+        /* ── TEAM VIEW ── */
+        <div style={{background:"#fff",borderRadius:16,boxShadow:"0 2px 12px rgba(0,0,0,0.06)",overflow:"hidden"}}>
+          <div style={{padding:"16px 20px",borderBottom:"1px solid #F1F5F9",background:"#F8FAFC"}}>
+            <div style={{fontSize:14,fontWeight:700,color:"#0F172A"}}>Gestão da Equipa</div>
+            <div style={{fontSize:12,color:"#94A3B8",marginTop:2}}>Promove um médico a coordenador. O teu papel passa para essa pessoa — tu ficas como médico.</div>
+          </div>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+            <thead>
+              <tr style={{background:"#F8FAFC"}}>
+                {["Nome","Especialidade","Sigla","Papel","Ação"].map((h,i)=>(
+                  <th key={i} style={{padding:"11px 16px",textAlign:"left",fontSize:11,fontWeight:700,color:"#64748B",letterSpacing:1,borderBottom:"1px solid #E2E8F0"}}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {allUsers.map((u,i)=>(
+                <tr key={u.email} style={{borderBottom:"1px solid #F1F5F9",background:i%2===0?"#fff":"#FAFAFA"}}>
+                  <td style={{padding:"11px 16px",fontWeight:600,color:"#0F172A"}}>{u.name}</td>
+                  <td style={{padding:"11px 16px",color:"#64748B"}}>{u.specialty}</td>
+                  <td style={{padding:"11px 16px"}}>
+                    <span style={{background:"#F1F5F9",color:"#374151",borderRadius:6,padding:"2px 8px",fontWeight:700,fontSize:12,fontFamily:"monospace"}}>{u.initials}</span>
+                  </td>
+                  <td style={{padding:"11px 16px"}}>
+                    <span style={{background:u.role==="coordinator"?"#EEF2FF":"#F0FDF4",color:u.role==="coordinator"?"#4338CA":"#15803D",borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:700}}>
+                      {u.role==="coordinator"?"👑 Coordenador":"👩\u200d⚕️ Médico"}
+                    </span>
+                  </td>
+                  <td style={{padding:"11px 16px"}}>
+                    {u.role==="doctor" ? (
+                      <button
+                        onClick={()=>setConfirmTransfer({name:u.name,email:u.email})}
+                        style={{background:"#EEF2FF",color:"#4338CA",border:"1px solid #C7D2FE",borderRadius:8,padding:"6px 14px",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}
+                      >
+                        Promover a Coordenador
+                      </button>
+                    ) : u.email===user.email ? (
+                      <span style={{fontSize:12,color:"#94A3B8",fontStyle:"italic"}}>Tu (coordenador atual)</span>
+                    ) : (
+                      <span style={{fontSize:12,color:"#94A3B8",fontStyle:"italic"}}>Coordenador</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Confirm transfer modal */}
+      {confirmTransfer && (
+        <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,0.6)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+          <div style={{background:"#fff",borderRadius:20,padding:32,maxWidth:420,width:"100%",boxShadow:"0 24px 64px rgba(0,0,0,0.3)"}}>
+            <div style={{fontSize:32,textAlign:"center",marginBottom:12}}>👑</div>
+            <div style={{fontSize:18,fontWeight:800,color:"#0F172A",textAlign:"center",marginBottom:8}}>Transferir papel de coordenador</div>
+            <div style={{fontSize:14,color:"#64748B",textAlign:"center",marginBottom:24,lineHeight:1.6}}>
+              Vais passar o papel de <strong>Coordenador</strong> para <strong>{confirmTransfer.name}</strong>.<br/>
+              Tu passas a ser <strong>Médico</strong> e perdes acesso ao painel de coordenação.
+            </div>
+            <div style={{background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:10,padding:"10px 14px",fontSize:13,color:"#DC2626",marginBottom:24,textAlign:"center"}}>
+              ⚠️ Esta ação não pode ser desfeita por ti. Só o novo coordenador pode reverter.
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <button
+                onClick={()=>setConfirmTransfer(null)}
+                style={{flex:1,background:"#F8FAFC",color:"#374151",border:"1px solid #E2E8F0",borderRadius:10,padding:12,fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={()=>{onRoleChange(confirmTransfer.email,"coordinator");setConfirmTransfer(null);}}
+                style={{flex:1,background:"linear-gradient(135deg,#4338CA,#6D28D9)",color:"#fff",border:"none",borderRadius:10,padding:12,fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}
+              >
+                Confirmar transferência
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -865,7 +935,8 @@ function App() {
     }
   }, []);
 
-  const allUsers = loadUsers();
+  const [allUsersState, setAllUsersState] = useState(() => loadUsers());
+  const allUsers = allUsersState.length ? allUsersState : loadUsers();
   const doctors  = allUsers.filter(u => u.role === "doctor");
 
   const rng = (s) => { let x=Math.sin(s+1)*10000; return x-Math.floor(x); };
@@ -898,6 +969,19 @@ function App() {
   useEffect(() => { setSchedule(buildEmptySchedule(year, month)); }, [year, month]);
 
   const onToast = (msg, type="info") => setToast({msg, type});
+
+  function handleRoleChange(targetEmail, newRole) {
+    const updated = allUsers.map(u => {
+      if (u.email === targetEmail) return { ...u, role: "coordinator" };
+      if (u.email === user.email) return { ...u, role: "doctor" };
+      return u;
+    });
+    saveUsers(updated);
+    setAllUsersState([...updated]);
+    const newCoord = updated.find(u => u.email === targetEmail);
+    onToast(`${newCoord.name} é agora Coordenador. O teu papel mudou para Médico.`, "info");
+    setUser(u => ({ ...u, role: "doctor" }));
+  }
 
   function handleNotify() {
     onToast(`🔔 Notificação enviada para ${doctors.length} médicos: escala de ${MONTHS[month]} ${year} publicada.`, "success");
@@ -936,10 +1020,10 @@ function App() {
       {user.role==="coordinator" ? (
         <CoordinatorView
           user={user} year={year} month={month} setYear={setYear} setMonth={setMonth}
-          doctors={doctors} allAvailabilities={allAvailabilities}
+          allUsers={allUsers} doctors={doctors} allAvailabilities={allAvailabilities}
           schedule={schedule} setSchedule={setSchedule}
           historicShifts={historicShifts}
-          onNotify={handleNotify} onToast={onToast}
+          onNotify={handleNotify} onToast={onToast} onRoleChange={handleRoleChange}
         />
       ) : (
         <DoctorView
