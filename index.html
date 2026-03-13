@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Turnos Médicos</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body { margin: 0; padding: 0; background: #F1F5F9; }
+  select, button, input { font-family: inherit; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #f1f1f1; }
+  ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
+  input::placeholder { color: #64748B; opacity: 0.7; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+  // Make React hooks available globally for the Babel-compiled code
+  const { useState, useEffect, useRef } = React;
+  // Make XLSX available globally
+  // (already loaded via CDN as window.XLSX)
+</script>
+<script type="text/babel" data-presets="react">
+
+
+
+// ─── CONSTANTS ───────────────────────────────────────────────────────────────
+
+const MONTHS = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+const WEEKDAYS = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
+
+const AVAIL_OPTIONS = [
+  { value: "",     label: "Indisponível", icon: "✕",    color: "#F3F4F6", text: "#9CA3AF" },
+  { value: "M",    label: "Manhã",        icon: "☀️",   color: "#FEF3C7", text: "#92400E" },
+  { value: "T",    label: "Tarde",        icon: "🌤",   color: "#DBEAFE", text: "#1E40AF" },
+  { value: "N",    label: "Noite",        icon: "🌙",   color: "#EDE9FE", text: "#5B21B6" },
+  { value: "MT",   label: "M ou T",       icon: "☀🌤", color: "#D1FAE5", text: "#065F46" },
+  { value: "MN",   label: "M ou N",       icon: "☀🌙", color: "#FCE7F3", text: "#9D174D" },
+  { value: "TN",   label: "T ou N",       icon: "🌤🌙",color: "#FEF9C3", text: "#713F12" },
+  { value: "MTN",  label: "Qualquer",     icon: "✓✓",  color: "#DCFCE7", text: "#14532D" },
+  { value: "MT!",  label: "M+T juntos",   icon: "☀🌤!",color: "#FFE4E6", text: "#9F1239" },
+  { value: "MN!",  label: "M+N juntos",   icon: "☀🌙!",color: "#FDE8FF", text: "#701A75" },
+  { value: "TN!",  label: "T+N juntos",   icon: "🌤🌙!",color:"#FFF7CD", text: "#78350F" },
+];
+
+const SHIFT_META = {
+  M: { label: "Manhã",  time: "08–14h", bg: "#FFFBEB", border: "#FDE68A", text: "#92400E", icon: "☀️" },
+  T: { label: "Tarde",  time: "14–20h", bg: "#EFF6FF", border: "#BFDBFE", text: "#1E40AF", icon: "🌤" },
+  N: { label: "Noite",  time: "20–08h", bg: "#F5F3FF", border: "#DDD6FE", text: "#5B21B6", icon: "🌙" },
+};
+
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+
+const getDaysInMonth = (y, m) => new Date(y, m + 1, 0).getDate();
+const getFirstDay    = (y, m) => new Date(y, m, 1).getDay();
+const getAvailOpt    = (v)    => AVAIL_OPTIONS.find(o => o.value === v) || AVAIL_OPTIONS[0];
+
+function initAvail(year, month) {
+  const days = getDaysInMonth(year, month);
+  const obj = {};
+  for (let d = 1; d <= days; d++) obj[d] = "";
+  return obj;
+}
+
+function buildEmptySchedule(year, month) {
+  const days = getDaysInMonth(year, month);
+  const s = {};
+  for (let d = 1; d <= days; d++) s[d] = { M: null, T: null, N: null };
+  return s;
+}
+
+function shiftsInAvail(avail) {
+  if (!avail) return [];
+  return avail.replace("!", "").split("").filter(c => ["M","T","N"].includes(c));
+}
+const isBundle = (avail) => typeof avail === "string" && avail.endsWith("!");
+
+// ─── AUTO-ASSIGN ENGINE ──────────────────────────────────────────────────────
+
+function autoAssign(year, month, allAvailabilities, historicShifts, doctors) {
+  const days = getDaysInMonth(year, month);
+  const schedule = buildEmptySchedule(year, month);
+  const log = [];
+  const monthCount = {};
+  doctors.forEach(d => { monthCount[d.name] = 0; });
+
+  const getAvail = (name, day) => allAvailabilities[name]?.[day] || "";
+  const breadth  = (name, day) => shiftsInAvail(getAvail(name, day)).length;
+  const canCover = (name, day, sh) => shiftsInAvail(getAvail(name, day)).includes(sh);
+  const isToday  = (name, day) => { const s = schedule[day]; return s.M === name || s.T === name || s.N === name; };
+
+  function buildSlots() {
+    const slots = [];
+    for (let d = 1; d <= days; d++) {
+      for (const sh of ["M","T","N"]) {
+        if (schedule[d][sh]) continue;
+        const count = doctors.filter(doc => {
+          if (!canCover(doc.name, d, sh) || isToday(doc.name, d)) return false;
+          const av = getAvail(doc.name, d);
+          if (isBundle(av)) return shiftsInAvail(av).every(s2 => !schedule[d][s2]);
+          return true;
+        }).length;
+        slots.push({ day: d, shift: sh, count });
+      }
+    }
+    return slots.sort((a, b) => a.count - b.count || Math.random() - 0.5);
+  }
+
+  function rank(candidates, day) {
+    return [...candidates].sort((a, b) => {
+      const ba = breadth(a, day), bb = breadth(b, day);
+      if (bb !== ba) return bb - ba;
+      const ha = historicShifts[a] || 0, hb = historicShifts[b] || 0;
+      if (ha !== hb) return hb - ha;
+      const ma = monthCount[a] || 0, mb = monthCount[b] || 0;
+      if (ma !== mb) return mb - ma;
+      return Math.random() - 0.5;
+    });
+  }
+
+  let guard = days * 9;
+  while (guard-- > 0) {
+    const slots = buildSlots();
+    if (!slots.length) break;
+    const { day, shift } = slots[0];
+
+    const candidates = doctors.filter(doc => {
+      if (!canCover(doc.name, day, shift) || isToday(doc.name, day)) return false;
+      const av = getAvail(doc.name, day);
+      if (isBundle(av)) return shiftsInAvail(av).every(s2 => !schedule[day][s2]);
+      return true;
+    }).map(d => d.name);
+
+    if (!candidates.length) {
+      schedule[day][shift] = "__EMPTY__";
+      log.push({ type: "warn", msg: `Dia ${day} turno ${shift}: sem médico disponível` });
+      continue;
+    }
+
+    const ranked = rank(candidates, day);
+    const chosen = ranked[0];
+    const avail  = getAvail(chosen, day);
+
+    if (isBundle(avail)) {
+      shiftsInAvail(avail).forEach(s2 => { schedule[day][s2] = chosen; monthCount[chosen]++; });
+      log.push({ type: "bundle", msg: `Dia ${day}: ${chosen} → ${shiftsInAvail(avail).join("+")} (conjunto)` });
+    } else {
+      schedule[day][shift] = chosen;
+      monthCount[chosen]++;
+      const why = slots[0].count === 1 ? "único disponível"
+        : breadth(chosen, day) > 1 ? `disponib. alargada (${avail})`
+        : "mais turnos acumulados";
+      log.push({ type: "assign", shift, msg: `Dia ${day} ${shift}: ${chosen} — ${why}` });
+    }
+  }
+
+  for (let d = 1; d <= days; d++)
+    for (const sh of ["M","T","N"])
+      if (schedule[d][sh] === "__EMPTY__") schedule[d][sh] = null;
+
+  return { schedule, log };
+}
+
+// ─── PDF EXPORT (client-side via jsPDF) ──────────────────────────────────────
+
+async function exportPDF(schedule, year, month, doctors) {
+  const { jsPDF } = await import("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
+  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  const days = getDaysInMonth(year, month);
+  const monthName = MONTHS[month];
+
+  doc.setFillColor(15, 23, 42);
+  doc.rect(0, 0, 297, 20, "F");
+  doc.setTextColor(241, 245, 249);
+  doc.setFontSize(14);
+  doc.setFont("helvetica", "bold");
+  doc.text(`Escala de Turnos — ${monthName} ${year}`, 14, 13);
+  doc.setFontSize(9);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(148, 163, 184);
+  doc.text(`Gerado em ${new Date().toLocaleDateString("pt-PT")}`, 240, 13);
+
+  const colW = [14, 18, 62, 62, 62];
+  const headers = ["Dia", "Sem.", "Manhã (08–14h)", "Tarde (14–20h)", "Noite (20–08h)"];
+  let y = 26;
+  doc.setFillColor(248, 250, 252);
+  doc.rect(10, y - 5, 277, 8, "F");
+  doc.setTextColor(100, 116, 139);
+  doc.setFontSize(8);
+  doc.setFont("helvetica", "bold");
+  let x = 10;
+  headers.forEach((h, i) => { doc.text(h, x + 2, y); x += colW[i]; });
+  y += 4;
+
+  const shiftColors = { M: [255,251,235], T: [239,246,255], N: [245,243,255] };
+  const shiftText   = { M: [146,64,14],   T: [30,64,175],   N: [91,33,182]  };
+
+  for (let d = 1; d <= days; d++) {
+    if (y > 185) { doc.addPage(); y = 15; }
+    const s = schedule[d] || {};
+    const dayName = new Date(year, month, d).toLocaleDateString("pt-PT", { weekday: "short" });
+    const isWeekend = [0,6].includes(new Date(year, month, d).getDay());
+    if (isWeekend) { doc.setFillColor(250,250,250); doc.rect(10, y - 4, 277, 7, "F"); }
+
+    doc.setFontSize(8);
+    doc.setFont("helvetica", isWeekend ? "bold" : "normal");
+    doc.setTextColor(isWeekend ? 239 : 55, isWeekend ? 68 : 65, isWeekend ? 68 : 81);
+    x = 10;
+    doc.text(String(d), x + 2, y); x += colW[0];
+    doc.text(dayName, x + 2, y); x += colW[1];
+
+    ["M","T","N"].forEach((sh, si) => {
+      const name = s[sh];
+      if (name) {
+        const [r,g,b] = shiftColors[sh];
+        doc.setFillColor(r,g,b);
+        doc.roundedRect(x, y - 4, colW[si+2] - 2, 6, 1, 1, "F");
+        const [tr,tg,tb] = shiftText[sh];
+        doc.setTextColor(tr,tg,tb);
+        doc.setFont("helvetica","bold");
+        doc.text(name, x + 2, y, { maxWidth: colW[si+2] - 4 });
+      } else {
+        doc.setTextColor(203,213,225);
+        doc.setFont("helvetica","normal");
+        doc.text("—", x + 2, y);
+      }
+      x += colW[si+2];
+    });
+    y += 7;
+  }
+
+  // Summary page
+  doc.addPage();
+  doc.setFillColor(15,23,42);
+  doc.rect(0,0,297,20,"F");
+  doc.setTextColor(241,245,249);
+  doc.setFontSize(14);
+  doc.setFont("helvetica","bold");
+  doc.text(`Resumo de Turnos — ${monthName} ${year}`, 14, 13);
+
+  y = 30;
+  const sumH = ["Médico","Sigla","Especialidade","Manhã","Tarde","Noite","Total"];
+  const sumW = [70,20,50,20,20,20,20];
+  doc.setFillColor(248,250,252);
+  doc.rect(10, y-5, 225, 8, "F");
+  doc.setTextColor(100,116,139);
+  doc.setFontSize(8);
+  doc.setFont("helvetica","bold");
+  x = 10;
+  sumH.forEach((h, i) => { doc.text(h, x+2, y); x += sumW[i]; });
+  y += 4;
+
+  doctors.forEach((doc2, idx) => {
+    let mC=0,tC=0,nC=0;
+    for (let d=1; d<=days; d++) {
+      const s = schedule[d]||{};
+      if(s.M===doc2.name) mC++;
+      if(s.T===doc2.name) tC++;
+      if(s.N===doc2.name) nC++;
+    }
+    if(idx%2===0){doc.setFillColor(250,250,250);doc.rect(10,y-4,225,7,"F");}
+    doc.setTextColor(55,65,81);
+    doc.setFont("helvetica","normal");
+    doc.setFontSize(8);
+    x=10;
+    [doc2.name,doc2.initials,doc2.specialty,mC,tC,nC,mC+tC+nC].forEach((v,i)=>{
+      doc.text(String(v),x+2,y);x+=sumW[i];
+    });
+    y+=7;
+  });
+
+  doc.save(`escala-${monthName.toLowerCase()}-${year}.pdf`);
+}
+
+// ─── EXCEL EXPORT ────────────────────────────────────────────────────────────
+
+function exportExcel(schedule, year, month, doctors, historicShifts) {
+  const wb = XLSX.utils.book_new();
+  const days = getDaysInMonth(year, month);
+  const monthName = MONTHS[month];
+
+  // Sheet 1: Schedule
+  const rows1 = [["Dia","Dia Semana","Manhã (08-14h)","Tarde (14-20h)","Noite (20-08h)"]];
+  for (let d = 1; d <= days; d++) {
+    const s = schedule[d]||{};
+    rows1.push([d, new Date(year,month,d).toLocaleDateString("pt-PT",{weekday:"long"}), s.M||"", s.T||"", s.N||""]);
+  }
+  const ws1 = XLSX.utils.aoa_to_sheet(rows1);
+  ws1["!cols"] = [{wch:6},{wch:14},{wch:28},{wch:28},{wch:28}];
+  XLSX.utils.book_append_sheet(wb, ws1, `Escala ${monthName}`);
+
+  // Sheet 2: Monthly totals
+  const rows2 = [["Médico","Sigla","Especialidade","Manhã","Tarde","Noite","Total Mês"]];
+  doctors.forEach(doc => {
+    let m=0,t=0,n=0;
+    for (let d=1;d<=days;d++){const s=schedule[d]||{};if(s.M===doc.name)m++;if(s.T===doc.name)t++;if(s.N===doc.name)n++;}
+    rows2.push([doc.name,doc.initials,doc.specialty,m,t,n,m+t+n]);
+  });
+  rows2.push([]);
+  rows2.push(["TOTAL","","",
+    `=SUM(D2:D${doctors.length+1})`,
+    `=SUM(E2:E${doctors.length+1})`,
+    `=SUM(F2:F${doctors.length+1})`,
+    `=SUM(G2:G${doctors.length+1})`
+  ]);
+  const ws2 = XLSX.utils.aoa_to_sheet(rows2);
+  ws2["!cols"] = [{wch:26},{wch:8},{wch:20},{wch:10},{wch:10},{wch:10},{wch:12}];
+  XLSX.utils.book_append_sheet(wb, ws2, `Totais ${monthName}`);
+
+  // Sheet 3: 12-month history
+  const pastMonths = [];
+  for (let i=11;i>=0;i--) {
+    const d = new Date(year, month-i, 1);
+    pastMonths.push({ y:d.getFullYear(), m:d.getMonth(), label:`${MONTHS[d.getMonth()].slice(0,3)} ${d.getFullYear()}` });
+  }
+  const rows3 = [["Médico","Sigla","Especialidade",...pastMonths.map(p=>p.label),"Total 12M","M 12M","T 12M","N 12M"]];
+  const rng = (s) => { let x=Math.sin(s+1)*10000; return Math.floor((x-Math.floor(x))*8); };
+  doctors.forEach(doc => {
+    const monthly = pastMonths.map((p,pi) => {
+      if (pi===11) {
+        let tot=0;
+        for(let d=1;d<=days;d++){const s=schedule[d]||{};if(s.M===doc.name||s.T===doc.name||s.N===doc.name)tot++;}
+        return tot;
+      }
+      return rng(doc.name.length*13+pi*7+doc.initials.charCodeAt(0));
+    });
+    const total12 = historicShifts[doc.name] || monthly.reduce((a,b)=>a+b,0);
+    const mH=Math.round(total12*0.35), tH=Math.round(total12*0.35), nH=total12-mH-tH;
+    rows3.push([doc.name,doc.initials,doc.specialty,...monthly,total12,mH,tH,nH]);
+  });
+  const ws3 = XLSX.utils.aoa_to_sheet(rows3);
+  ws3["!cols"] = [{wch:26},{wch:8},{wch:20},...pastMonths.map(()=>({wch:12})),{wch:12},{wch:10},{wch:10},{wch:10}];
+  XLSX.utils.book_append_sheet(wb, ws3, "Histórico 12 Meses");
+
+  XLSX.writeFile(wb, `turnos-${monthName.toLowerCase()}-${year}.xlsx`);
+}
+
+// ─── STORAGE ─────────────────────────────────────────────────────────────────
+
+function loadUsers() {
+  return window._turnos_users || [];
+}
+function saveUsers(users) { window._turnos_users = users; }
+
+// ─── TOAST ───────────────────────────────────────────────────────────────────
+
+function Toast({ message, type, onClose }) {
+  useEffect(() => { const t = setTimeout(onClose, 4500); return () => clearTimeout(t); }, []);
+  const cfg = { success:["#ECFDF5","#059669","#6EE7B7","✓"], info:["#EFF6FF","#2563EB","#BFDBFE","ℹ️"], warn:["#FFF7ED","#D97706","#FED7AA","⚠️"] };
+  const [bg,text,border,icon] = cfg[type]||cfg.info;
+  return (
+    <div style={{ position:"fixed",bottom:24,right:24,zIndex:999,background:bg,border:`1px solid ${border}`,color:text,borderRadius:12,padding:"13px 18px",fontSize:14,fontWeight:600,boxShadow:"0 8px 24px rgba(0,0,0,0.12)",maxWidth:360,display:"flex",alignItems:"center",gap:10,animation:"slideIn 0.3s ease" }}>
+      <span>{icon}</span>
+      <span style={{flex:1}}>{message}</span>
+      <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",color:text,fontSize:16,padding:0}}>✕</button>
+    </div>
+  );
+}
+
+// ─── AUTH ────────────────────────────────────────────────────────────────────
+
+function AuthScreen({ onLogin }) {
+  const [mode, setMode] = useState("login");
+  const [form, setForm] = useState({ name:"", specialty:"", initials:"", email:"", password:"", role:"doctor" });
+  const [error, setError] = useState("");
+
+  function handleSubmit() {
+    setError("");
+    if (mode === "register") {
+      if (!form.name||!form.specialty||!form.initials||!form.email||!form.password) { setError("Preenche todos os campos."); return; }
+      if (form.initials.length !== 3) { setError("A sigla deve ter exatamente 3 letras."); return; }
+      if (!form.email.includes("@")) { setError("Email inválido."); return; }
+      const users = loadUsers();
+      if (users.find(u=>u.email===form.email)) { setError("Email já registado."); return; }
+      const newUser = { ...form, initials:form.initials.toUpperCase() };
+      saveUsers([...users, newUser]);
+      onLogin(newUser);
+    } else {
+      if (!form.email||!form.password) { setError("Preenche email e password."); return; }
+      const user = loadUsers().find(u=>u.email===form.email&&u.password===form.password);
+      if (!user) { setError("Email ou password incorretos."); return; }
+      onLogin(user);
+    }
+  }
+
+  const inp = (field, placeholder, type="text", extra={}) => (
+    <input type={type} placeholder={placeholder} value={form[field]}
+      onChange={e => setForm(p=>({...p,[field]:e.target.value}))}
+      onKeyDown={e => e.key==="Enter" && handleSubmit()}
+      style={{ width:"100%", background:"#1E293B", border:"1px solid #334155", borderRadius:10, padding:"12px 14px", fontSize:14, color:"#F1F5F9", fontFamily:"inherit", outline:"none", boxSizing:"border-box", ...extra }}
+    />
+  );
+
+  return (
+    <div style={{ minHeight:"100vh", background:"linear-gradient(135deg,#0F172A 0%,#1E1B4B 100%)", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Segoe UI',system-ui,sans-serif", padding:20 }}>
+      <style>{`@keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}`}</style>
+      <div style={{ width:"100%", maxWidth:420, animation:"fadeUp 0.4s ease" }}>
+        <div style={{ textAlign:"center", marginBottom:32 }}>
+          <div style={{ width:64, height:64, background:"linear-gradient(135deg,#4338CA,#7C3AED)", borderRadius:18, display:"flex", alignItems:"center", justifyContent:"center", fontSize:30, margin:"0 auto 16px", boxShadow:"0 8px 24px rgba(67,56,202,0.4)" }}>🏥</div>
+          <div style={{ color:"#A5B4FC", fontSize:11, letterSpacing:3, textTransform:"uppercase", marginBottom:6 }}>Sistema de Gestão</div>
+          <h1 style={{ color:"#F1F5F9", fontSize:26, fontWeight:800, margin:0 }}>Turnos Médicos</h1>
+        </div>
+
+        <div style={{ background:"#1E293B", borderRadius:20, padding:32, boxShadow:"0 20px 60px rgba(0,0,0,0.4)" }}>
+          <div style={{ display:"flex", background:"#0F172A", borderRadius:10, padding:4, marginBottom:24, gap:4 }}>
+            {[["login","Entrar"],["register","Registar"]].map(([m,l]) => (
+              <button key={m} onClick={() => {setMode(m);setError("");}} style={{ flex:1, padding:"9px 0", background:mode===m?"#4338CA":"transparent", color:mode===m?"#fff":"#94A3B8", border:"none", borderRadius:8, fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:"inherit", transition:"all 0.2s" }}>{l}</button>
+            ))}
+          </div>
+
+          <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+            {mode==="register" && (
+              <>
+                {inp("name","Nome completo")}
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 90px", gap:10 }}>
+                  {inp("specialty","Especialidade")}
+                  {inp("initials","Sigla","text",{textTransform:"uppercase",maxLength:3})}
+                </div>
+                <div style={{ display:"flex", gap:10 }}>
+                  {["doctor","coordinator"].map(r => (
+                    <button key={r} onClick={() => setForm(p=>({...p,role:r}))} style={{ flex:1, padding:"10px 0", border:`2px solid ${form.role===r?"#4338CA":"#334155"}`, background:form.role===r?"#312E81":"transparent", color:form.role===r?"#A5B4FC":"#64748B", borderRadius:10, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700 }}>
+                      {r==="doctor"?"👩‍⚕️ Médico":"📋 Coordenador"}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+            {inp("email","Email","email")}
+            {inp("password","Password","password")}
+            {error && <div style={{ background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:8, padding:"10px 14px", color:"#DC2626", fontSize:13 }}>{error}</div>}
+            <button onClick={handleSubmit} style={{ background:"linear-gradient(135deg,#4338CA,#7C3AED)", color:"#fff", border:"none", borderRadius:12, padding:14, fontSize:15, fontWeight:700, cursor:"pointer", fontFamily:"inherit", marginTop:4, boxShadow:"0 4px 16px rgba(67,56,202,0.35)" }}>
+              {mode==="login"?"→ Entrar":"→ Criar conta"}
+            </button>
+          </div>
+
+          {mode==="login" && (
+            <div style={{ marginTop:16, padding:12, background:"#0F172A", borderRadius:10, fontSize:11, color:"#64748B" }}>
+              <div style={{ fontWeight:700, color:"#475569", marginBottom:6 }}>Demo — contas de teste:</div>
+              <div>médico@demo.pt / demo123 &nbsp;·&nbsp; Médico</div>
+              <div>coord@demo.pt / demo123 &nbsp;·&nbsp; Coordenador</div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── AVAIL PICKER ────────────────────────────────────────────────────────────
+
+function AvailPicker({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const opt = getAvailOpt(value);
+  useEffect(() => {
+    const h = e => { if(ref.current&&!ref.current.contains(e.target))setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+  return (
+    <div ref={ref} style={{ position:"relative", display:"inline-block" }}>
+      <button onClick={() => setOpen(o=>!o)} title={opt.label} style={{ background:opt.color, color:opt.text, border:"none", borderRadius:6, padding:"2px 6px", fontSize:11, fontFamily:"inherit", cursor:"pointer", fontWeight:600, minWidth:36 }}>
+        {opt.icon||"✕"}
+      </button>
+      {open && (
+        <div style={{ position:"absolute", zIndex:200, top:"110%", left:0, background:"#fff", borderRadius:12, boxShadow:"0 8px 32px rgba(0,0,0,0.2)", padding:8, display:"grid", gridTemplateColumns:"1fr 1fr", gap:4, width:230 }}>
+          {AVAIL_OPTIONS.map(o => (
+            <button key={o.value} onClick={() => {onChange(o.value);setOpen(false);}} style={{ background:o.color, color:o.text, border:value===o.value?"2px solid #374151":"2px solid transparent", borderRadius:8, padding:"6px 8px", fontSize:11, cursor:"pointer", fontWeight:600, textAlign:"left", fontFamily:"inherit" }}>
+              {o.icon} {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── DOCTOR VIEW ─────────────────────────────────────────────────────────────
+
+function DoctorView({ user, year, month, setYear, setMonth, availability, onAvailChange, onSubmit, submitted }) {
+  const days = getDaysInMonth(year, month);
+  const firstDay = getFirstDay(year, month);
+  const today = new Date();
+  const filled = Object.values(availability).filter(v=>v!=="").length;
+
+  const cells = [];
+  for (let i=0;i<firstDay;i++) cells.push(null);
+  for (let d=1;d<=days;d++) cells.push(d);
+  while (cells.length%7!==0) cells.push(null);
+
+  return (
+    <div style={{ maxWidth:840, margin:"0 auto" }}>
+      <div style={{ background:"linear-gradient(135deg,#0F172A,#1E293B)", borderRadius:20, padding:"24px 28px", marginBottom:20, display:"flex", justifyContent:"space-between", alignItems:"center", boxShadow:"0 4px 24px rgba(0,0,0,0.2)" }}>
+        <div>
+          <div style={{ color:"#94A3B8", fontSize:11, letterSpacing:2, textTransform:"uppercase" }}>Portal de Disponibilidades</div>
+          <div style={{ color:"#F1F5F9", fontSize:20, fontWeight:700, marginTop:2 }}>{user.name}</div>
+          <div style={{ color:"#64748B", fontSize:12, marginTop:1 }}>{user.specialty} · {user.initials}</div>
+        </div>
+        <div style={{ display:"flex", gap:10 }}>
+          <select value={month} onChange={e=>setMonth(Number(e.target.value))} style={{ background:"#1E293B", color:"#E2E8F0", border:"1px solid #334155", borderRadius:8, padding:"8px 12px", fontSize:13, fontFamily:"inherit" }}>
+            {MONTHS.map((m,i)=><option key={i} value={i}>{m}</option>)}
+          </select>
+          <select value={year} onChange={e=>setYear(Number(e.target.value))} style={{ background:"#1E293B", color:"#E2E8F0", border:"1px solid #334155", borderRadius:8, padding:"8px 12px", fontSize:13, fontFamily:"inherit" }}>
+            {[2025,2026,2027].map(y=><option key={y} value={y}>{y}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:14 }}>
+        {AVAIL_OPTIONS.slice(1).map(o=>(
+          <span key={o.value} style={{ background:o.color, color:o.text, borderRadius:20, padding:"3px 10px", fontSize:11, fontWeight:600 }}>{o.icon} {o.label}</span>
+        ))}
+      </div>
+      <div style={{ background:"#FFF7ED", border:"1px solid #FED7AA", borderRadius:10, padding:"9px 14px", marginBottom:14, fontSize:12, color:"#92400E" }}>
+        <strong>💡</strong> Opções com <strong>!</strong> indicam que só aceitas a escala se <em>ambos</em> os turnos forem atribuídos simultaneamente.
+      </div>
+
+      <div style={{ background:"#fff", borderRadius:16, boxShadow:"0 2px 12px rgba(0,0,0,0.07)", overflow:"hidden", marginBottom:14 }}>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", background:"#F8FAFC" }}>
+          {WEEKDAYS.map(w=><div key={w} style={{ textAlign:"center", padding:"9px 0", fontSize:11, fontWeight:700, color:"#64748B", letterSpacing:1 }}>{w}</div>)}
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)" }}>
+          {cells.map((d,i)=>{
+            if(!d) return <div key={`e${i}`} style={{ borderTop:"1px solid #F1F5F9", padding:6, minHeight:68, background:"#FAFAFA" }}/>;
+            const avail = availability[d];
+            const opt = getAvailOpt(avail);
+            const isToday = today.getDate()===d&&today.getMonth()===month&&today.getFullYear()===year;
+            return (
+              <div key={d} style={{ borderTop:"1px solid #F1F5F9", borderLeft:i%7!==0?"1px solid #F1F5F9":"none", padding:6, minHeight:68, background:opt.color }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:4 }}>
+                  <span style={{ fontSize:12, fontWeight:700, color:isToday?"#fff":"#374151", background:isToday?"#3B82F6":"transparent", borderRadius:"50%", width:20, height:20, display:"flex", alignItems:"center", justifyContent:"center" }}>{d}</span>
+                  <AvailPicker value={avail} onChange={v=>onAvailChange(d,v)}/>
+                </div>
+                {avail&&<div style={{ fontSize:10, color:opt.text, fontWeight:600 }}>{opt.label}</div>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:submitted?"#ECFDF5":"#F8FAFC", border:`1px solid ${submitted?"#6EE7B7":"#E2E8F0"}`, borderRadius:12, padding:"14px 20px" }}>
+        <div>
+          <div style={{ fontSize:13, fontWeight:600, color:"#374151" }}>{filled} / {days} dias preenchidos</div>
+          <div style={{ fontSize:11, color:"#9CA3AF" }}>Dias sem indicação = indisponível</div>
+        </div>
+        <button onClick={onSubmit} disabled={submitted} style={{ background:submitted?"#10B981":"#0F172A", color:"#fff", border:"none", borderRadius:10, padding:"11px 24px", fontSize:13, fontWeight:700, cursor:submitted?"default":"pointer", fontFamily:"inherit" }}>
+          {submitted?"✓ Submetido":`Submeter ${MONTHS[month]}`}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── COORDINATOR VIEW ─────────────────────────────────────────────────────────
+
+function CoordinatorView({ user, year, month, setYear, setMonth, doctors, allAvailabilities, schedule, setSchedule, historicShifts, onNotify, onToast }) {
+  const days = getDaysInMonth(year, month);
+  const firstDay = getFirstDay(year, month);
+  const [selectedDay, setSelectedDay] = useState(null);
+  const [view, setView] = useState("calendar");
+  const [autoLog, setAutoLog] = useState(null);
+  const [isRunning, setIsRunning] = useState(false);
+  const [exporting, setExporting] = useState(null);
+
+  function handleAutoAssign() {
+    setIsRunning(true);
+    setTimeout(() => {
+      const result = autoAssign(year, month, allAvailabilities, historicShifts, doctors);
+      setSchedule(result.schedule);
+      setAutoLog(result.log);
+      setIsRunning(false);
+      const filled = Object.values(result.schedule).reduce((a,s)=>a+(s.M?1:0)+(s.T?1:0)+(s.N?1:0),0);
+      onToast(`Atribuição concluída: ${filled} turnos preenchidos`, "success");
+    }, 500);
+  }
+
+  async function handleExportPDF() {
+    setExporting("pdf");
+    try { await exportPDF(schedule, year, month, doctors); onToast("PDF exportado!", "success"); }
+    catch(e) { onToast("Erro PDF: "+e.message, "warn"); }
+    setExporting(null);
+  }
+
+  function handleExportExcel() {
+    setExporting("xlsx");
+    try { exportExcel(schedule, year, month, doctors, historicShifts); onToast("Excel exportado!", "success"); }
+    catch(e) { onToast("Erro Excel: "+e.message, "warn"); }
+    setExporting(null);
+  }
+
+  function assignDoctor(day, sh, name) {
+    setSchedule(prev=>({...prev,[day]:{...prev[day],[sh]:name}}));
+  }
+
+  function countShifts(name) {
+    let c=0;
+    for(let d=1;d<=days;d++){const s=schedule[d]||{};if(s.M===name)c++;if(s.T===name)c++;if(s.N===name)c++;}
+    return c;
+  }
+
+  function getAvailDoctors(day, sh) {
+    return doctors.filter(doc=>{
+      const av=allAvailabilities[doc.name]?.[day]||"";
+      return av && shiftsInAvail(av).includes(sh);
+    });
+  }
+
+  const filled = Object.values(schedule).reduce((a,s)=>a+(s.M?1:0)+(s.T?1:0)+(s.N?1:0),0);
+  const cells = [];
+  for(let i=0;i<firstDay;i++) cells.push(null);
+  for(let d=1;d<=days;d++) cells.push(d);
+  while(cells.length%7!==0) cells.push(null);
+
+  const btn = (extra={}) => ({ border:"none", borderRadius:10, padding:"11px 16px", fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", gap:7, ...extra });
+
+  return (
+    <div style={{ maxWidth:1050, margin:"0 auto" }}>
+      {/* Header */}
+      <div style={{ background:"linear-gradient(135deg,#0F172A,#312E81)", borderRadius:20, padding:"24px 28px", marginBottom:18, boxShadow:"0 4px 24px rgba(0,0,0,0.25)" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:14 }}>
+          <div>
+            <div style={{ color:"#A5B4FC", fontSize:11, letterSpacing:2, textTransform:"uppercase" }}>Painel do Coordenador</div>
+            <div style={{ color:"#F1F5F9", fontSize:20, fontWeight:700, marginTop:2 }}>Gestão de Turnos · {MONTHS[month]} {year}</div>
+            <div style={{ color:"#64748B", fontSize:12, marginTop:1 }}>{user.name}</div>
+          </div>
+          <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
+            <select value={month} onChange={e=>setMonth(Number(e.target.value))} style={{ background:"#1E293B", color:"#E2E8F0", border:"1px solid #4338CA", borderRadius:8, padding:"7px 10px", fontSize:13, fontFamily:"inherit" }}>
+              {MONTHS.map((m,i)=><option key={i} value={i}>{m}</option>)}
+            </select>
+            <select value={year} onChange={e=>setYear(Number(e.target.value))} style={{ background:"#1E293B", color:"#E2E8F0", border:"1px solid #4338CA", borderRadius:8, padding:"7px 10px", fontSize:13, fontFamily:"inherit" }}>
+              {[2025,2026,2027].map(y=><option key={y} value={y}>{y}</option>)}
+            </select>
+            <div style={{ display:"flex", background:"#1E293B", borderRadius:8, overflow:"hidden", border:"1px solid #4338CA" }}>
+              {["calendar","list"].map(v=>(
+                <button key={v} onClick={()=>setView(v)} style={{ background:view===v?"#4338CA":"transparent", color:view===v?"#fff":"#94A3B8", border:"none", padding:"7px 12px", cursor:"pointer", fontSize:12, fontFamily:"inherit", fontWeight:600 }}>
+                  {v==="calendar"?"📅 Cal.":"📋 Lista"}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div style={{ display:"flex", gap:9, marginBottom:14, flexWrap:"wrap" }}>
+        <button onClick={handleAutoAssign} disabled={isRunning} style={btn({ background:"linear-gradient(135deg,#4338CA,#6D28D9)", color:"#fff", boxShadow:"0 4px 16px rgba(67,56,202,0.3)", opacity:isRunning?0.8:1 })}>
+          {isRunning?"⏳":"⚡"} {isRunning?"A atribuir...":"Atribuição Automática"}
+        </button>
+        <button onClick={()=>{setSchedule(buildEmptySchedule(year,month));onToast("Escala limpa.","info");}} style={btn({ background:"#fff", color:"#64748B", border:"1px solid #E2E8F0" })}>
+          🗑 Limpar
+        </button>
+        <button onClick={onNotify} style={btn({ background:"#EFF6FF", color:"#1D4ED8", border:"1px solid #BFDBFE" })}>
+          🔔 Notificar equipa
+        </button>
+        <button onClick={handleExportPDF} disabled={exporting==="pdf"} style={btn({ background:"#FEF2F2", color:"#DC2626", border:"1px solid #FECACA" })}>
+          {exporting==="pdf"?"⏳":"📄"} Exportar PDF
+        </button>
+        <button onClick={handleExportExcel} disabled={exporting==="xlsx"} style={btn({ background:"#F0FDF4", color:"#15803D", border:"1px solid #BBF7D0" })}>
+          {exporting==="xlsx"?"⏳":"📊"} Exportar Excel
+        </button>
+        {autoLog && (
+          <button onClick={()=>setAutoLog(null)} style={btn({ background:"#F5F3FF", color:"#5B21B6", border:"1px solid #DDD6FE" })}>
+            📋 Log ({autoLog.length})
+          </button>
+        )}
+      </div>
+
+      {/* Stats */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, marginBottom:14 }}>
+        {[
+          {icon:"👩‍⚕️", v:doctors.filter(d=>Object.values(allAvailabilities[d.name]||{}).some(v=>v!=="")).length, l:"Com disponibilidade"},
+          {icon:"✅", v:filled, l:"Turnos preenchidos"},
+          {icon:"⚠️", v:days*3-filled, l:"Turnos em falta"},
+          {icon:"📅", v:days, l:"Dias no mês"},
+        ].map((s,i)=>(
+          <div key={i} style={{ background:"#fff", borderRadius:12, padding:"12px 16px", boxShadow:"0 1px 8px rgba(0,0,0,0.05)" }}>
+            <div style={{fontSize:18}}>{s.icon}</div>
+            <div style={{fontSize:22,fontWeight:800,color:"#0F172A",margin:"2px 0"}}>{s.v}</div>
+            <div style={{fontSize:11,color:"#94A3B8"}}>{s.l}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Log modal */}
+      {autoLog && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", zIndex:300, display:"flex", alignItems:"center", justifyContent:"center" }} onClick={()=>setAutoLog(null)}>
+          <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:20, padding:28, maxWidth:540, width:"90%", maxHeight:"78vh", display:"flex", flexDirection:"column", boxShadow:"0 20px 60px rgba(0,0,0,0.3)" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+              <div style={{fontSize:16,fontWeight:800,color:"#0F172A"}}>⚡ Log da Atribuição</div>
+              <button onClick={()=>setAutoLog(null)} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:"#9CA3AF"}}>✕</button>
+            </div>
+            <div style={{overflow:"auto",flex:1}}>
+              {autoLog.map((e,i)=>(
+                <div key={i} style={{ padding:"5px 10px", marginBottom:3, borderRadius:7, fontSize:12, fontFamily:"monospace", background:e.type==="warn"?"#FEF2F2":e.type==="bundle"?"#F5F3FF":"#F0FDF4", color:e.type==="warn"?"#DC2626":e.type==="bundle"?"#5B21B6":"#15803D" }}>
+                  {e.type==="warn"?"⚠️":e.type==="bundle"?"🔗":"✓"} {e.msg}
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop:12, display:"flex", justifyContent:"space-between", fontSize:12, color:"#9CA3AF" }}>
+              <span>{autoLog.filter(e=>e.type!=="warn").length} atribuídos</span>
+              <span>{autoLog.filter(e=>e.type==="warn").length} sem cobertura</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Calendar / List */}
+      {view==="calendar" ? (
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 310px", gap:14 }}>
+          <div style={{ background:"#fff", borderRadius:16, boxShadow:"0 2px 12px rgba(0,0,0,0.06)", overflow:"hidden" }}>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", background:"#F8FAFC" }}>
+              {WEEKDAYS.map(w=><div key={w} style={{ textAlign:"center", padding:"9px 0", fontSize:11, fontWeight:700, color:"#64748B", letterSpacing:1 }}>{w}</div>)}
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)" }}>
+              {cells.map((d,i)=>{
+                if(!d) return <div key={`e${i}`} style={{ borderTop:"1px solid #F1F5F9", minHeight:78, background:"#FAFAFA" }}/>;
+                const s = schedule[d]||{};
+                const isWeekend = [0,6].includes(new Date(year,month,d).getDay());
+                return (
+                  <div key={d} onClick={()=>setSelectedDay(d)} style={{ borderTop:"1px solid #F1F5F9", borderLeft:i%7!==0?"1px solid #F1F5F9":"none", padding:5, minHeight:78, cursor:"pointer", background:selectedDay===d?"#EEF2FF":isWeekend?"#FAFAFA":"#fff", transition:"background 0.1s" }}>
+                    <div style={{ fontSize:11, fontWeight:700, color:isWeekend?"#EF4444":"#374151", marginBottom:3 }}>{d}</div>
+                    {["M","T","N"].map(sh=>{
+                      const meta=SHIFT_META[sh]; const name=s[sh];
+                      return <div key={sh} style={{ background:name?meta.bg:"#F9FAFB", border:`1px solid ${name?meta.border:"#E5E7EB"}`, borderRadius:3, padding:"1px 3px", marginBottom:2, fontSize:9, color:name?meta.text:"#D1D5DB", fontWeight:name?700:400, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                        {sh} {name?name.split(" ").pop():"—"}
+                      </div>;
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            {selectedDay ? (
+              <div style={{ background:"#fff", borderRadius:16, boxShadow:"0 2px 12px rgba(0,0,0,0.06)", padding:18 }}>
+                <div style={{fontSize:17,fontWeight:800,color:"#0F172A"}}>Dia {selectedDay} de {MONTHS[month]}</div>
+                <div style={{fontSize:12,color:"#94A3B8",marginBottom:14}}>{new Date(year,month,selectedDay).toLocaleDateString("pt-PT",{weekday:"long"})}</div>
+                {["M","T","N"].map(sh=>{
+                  const meta=SHIFT_META[sh];
+                  const avDocs=getAvailDoctors(selectedDay,sh);
+                  const assigned=schedule[selectedDay]?.[sh];
+                  return (
+                    <div key={sh} style={{ background:meta.bg, border:`1px solid ${meta.border}`, borderRadius:10, padding:12, marginBottom:10 }}>
+                      <div style={{fontSize:12,fontWeight:700,color:meta.text,marginBottom:7}}>{meta.icon} {meta.label} · {meta.time}</div>
+                      {assigned ? (
+                        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                          <span style={{fontSize:13,fontWeight:600,color:"#0F172A"}}>{assigned}</span>
+                          <button onClick={()=>assignDoctor(selectedDay,sh,null)} style={{background:"none",border:"1px solid #E5E7EB",borderRadius:6,padding:"2px 8px",fontSize:11,cursor:"pointer",color:"#9CA3AF",fontFamily:"inherit"}}>Remover</button>
+                        </div>
+                      ) : avDocs.length===0 ? (
+                        <div style={{fontSize:12,color:"#9CA3AF"}}>Nenhum médico disponível</div>
+                      ) : (
+                        <select onChange={e=>e.target.value&&assignDoctor(selectedDay,sh,e.target.value)} style={{width:"100%",background:"#fff",border:"1px solid #E5E7EB",borderRadius:8,padding:"6px 10px",fontSize:12,fontFamily:"inherit",color:"#374151"}}>
+                          <option value="">Selecionar ({avDocs.length} disp.)</option>
+                          {avDocs.map(doc=><option key={doc.name} value={doc.name}>{doc.name} [{doc.initials}] — {countShifts(doc.name)} turnos</option>)}
+                        </select>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div style={{background:"#F8FAFC",borderRadius:16,padding:24,textAlign:"center",border:"2px dashed #E2E8F0"}}>
+                <div style={{fontSize:32,marginBottom:10}}>👆</div>
+                <div style={{fontSize:13,color:"#94A3B8"}}>Clica num dia para gerir os turnos</div>
+              </div>
+            )}
+
+            <div style={{ background:"#fff", borderRadius:16, boxShadow:"0 2px 12px rgba(0,0,0,0.06)", padding:16, marginTop:12 }}>
+              <div style={{fontSize:12,fontWeight:700,color:"#374151",marginBottom:10}}>Carga este mês</div>
+              {doctors.map(doc=>{
+                const c=countShifts(doc.name);
+                return (
+                  <div key={doc.name} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
+                    <div style={{fontSize:11,fontWeight:700,color:"#64748B",width:30}}>{doc.initials}</div>
+                    <div style={{flex:1,height:6,background:"#F1F5F9",borderRadius:3,overflow:"hidden"}}>
+                      <div style={{width:`${Math.min(c*7,100)}%`,height:"100%",background:c>10?"#F59E0B":"#4338CA",borderRadius:3}}/>
+                    </div>
+                    <div style={{fontSize:11,fontWeight:700,color:"#374151",minWidth:18,textAlign:"right"}}>{c}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div style={{background:"#fff",borderRadius:16,boxShadow:"0 2px 12px rgba(0,0,0,0.06)",overflow:"hidden"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+            <thead>
+              <tr style={{background:"#F8FAFC"}}>
+                {["Dia","","Manhã ☀️","Tarde 🌤","Noite 🌙"].map((h,i)=><th key={i} style={{padding:"11px 14px",textAlign:"left",fontSize:11,fontWeight:700,color:"#64748B",letterSpacing:1,borderBottom:"1px solid #E2E8F0"}}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {Array.from({length:days},(_,i)=>i+1).map(d=>{
+                const s=schedule[d]||{};
+                const dayName=new Date(year,month,d).toLocaleDateString("pt-PT",{weekday:"short"});
+                const isWeekend=[0,6].includes(new Date(year,month,d).getDay());
+                return (
+                  <tr key={d} style={{background:isWeekend?"#FAFAFA":"#fff",borderBottom:"1px solid #F1F5F9"}}>
+                    <td style={{padding:"9px 14px",fontWeight:700,color:"#0F172A"}}>{d}</td>
+                    <td style={{padding:"9px 14px",color:isWeekend?"#EF4444":"#94A3B8",fontWeight:isWeekend?700:400}}>{dayName}</td>
+                    {["M","T","N"].map(sh=>{
+                      const meta=SHIFT_META[sh];const assigned=s[sh];const avDocs=getAvailDoctors(d,sh);
+                      return (
+                        <td key={sh} style={{padding:"7px 14px"}}>
+                          {assigned ? (
+                            <span style={{background:meta.bg,color:meta.text,borderRadius:20,padding:"3px 10px",fontWeight:600,fontSize:12,border:`1px solid ${meta.border}`}}>
+                              {assigned.replace(/Dr[a]?\. /,"")}
+                            </span>
+                          ) : (
+                            <select onChange={e=>e.target.value&&assignDoctor(d,sh,e.target.value)} style={{background:"#F9FAFB",border:"1px solid #E5E7EB",borderRadius:8,padding:"4px 8px",fontSize:11,fontFamily:"inherit",color:"#6B7280",maxWidth:160}}>
+                              <option value="">— {avDocs.length} disp.</option>
+                              {avDocs.map(doc=><option key={doc.name} value={doc.name}>{doc.initials} {doc.name.split(" ").pop()}</option>)}
+                            </select>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── ROOT APP ─────────────────────────────────────────────────────────────────
+
+function App() {
+  const today = new Date();
+  const [user, setUser] = useState(null);
+  const [year, setYear] = useState(today.getFullYear());
+  const [month, setMonth] = useState(today.getMonth());
+  const [toast, setToast] = useState(null);
+
+  // Seed demo users once
+  useEffect(() => {
+    if (!loadUsers().length) {
+      saveUsers([
+        { name:"Dr. Ana Ferreira",    specialty:"Medicina Interna",  initials:"ANF", email:"médico@demo.pt", password:"demo123", role:"doctor"      },
+        { name:"Dr. Bruno Costa",     specialty:"Urgência",          initials:"BRC", email:"bruno@demo.pt",  password:"demo123", role:"doctor"      },
+        { name:"Dra. Catarina Silva", specialty:"Cardiologia",       initials:"CAS", email:"cat@demo.pt",    password:"demo123", role:"doctor"      },
+        { name:"Dr. Diogo Mendes",    specialty:"Cirurgia",          initials:"DIM", email:"diogo@demo.pt",  password:"demo123", role:"doctor"      },
+        { name:"Dra. Elsa Rodrigues", specialty:"Medicina Interna",  initials:"ELR", email:"elsa@demo.pt",   password:"demo123", role:"doctor"      },
+        { name:"Dr. Filipe Santos",   specialty:"Urgência",          initials:"FIS", email:"filipe@demo.pt", password:"demo123", role:"doctor"      },
+        { name:"Dra. Graça Lopes",    specialty:"Neurologia",        initials:"GRL", email:"graca@demo.pt",  password:"demo123", role:"doctor"      },
+        { name:"Dr. Hugo Martins",    specialty:"Ortopedia",         initials:"HUM", email:"hugo@demo.pt",   password:"demo123", role:"doctor"      },
+        { name:"Dra. Inês Carvalho",  specialty:"Medicina Interna",  initials:"INC", email:"ines@demo.pt",   password:"demo123", role:"doctor"      },
+        { name:"Dr. João Pereira",    specialty:"Urgência",          initials:"JOP", email:"joao@demo.pt",   password:"demo123", role:"doctor"      },
+        { name:"Dra. Lara Sousa",     specialty:"Cardiologia",       initials:"LAS", email:"lara@demo.pt",   password:"demo123", role:"doctor"      },
+        { name:"Dr. Miguel Nunes",    specialty:"Cirurgia",          initials:"MIN", email:"miguel@demo.pt", password:"demo123", role:"doctor"      },
+        { name:"Dr. Coordenador",     specialty:"Gestão Clínica",    initials:"CRD", email:"coord@demo.pt",  password:"demo123", role:"coordinator" },
+      ]);
+    }
+  }, []);
+
+  const allUsers = loadUsers();
+  const doctors  = allUsers.filter(u => u.role === "doctor");
+
+  const rng = (s) => { let x=Math.sin(s+1)*10000; return x-Math.floor(x); };
+  const weighted = ["M","M","T","T","N","MT","MT","MTN","MN","TN","MT!","","",""];
+
+  const [allAvailabilities, setAllAvailabilities] = useState(() => {
+    const obj = {};
+    const dms = loadUsers().filter(u=>u.role==="doctor");
+    dms.forEach((d,di) => {
+      const av = initAvail(today.getFullYear(), today.getMonth());
+      const days = getDaysInMonth(today.getFullYear(), today.getMonth());
+      for (let day=1;day<=days;day++) {
+        const r = rng(di*100+day);
+        av[day] = r<0.75 ? weighted[Math.floor(r*weighted.length)] : "";
+      }
+      obj[d.name] = av;
+    });
+    return obj;
+  });
+
+  const [schedule, setSchedule] = useState(() => buildEmptySchedule(year, month));
+  const [submitted, setSubmitted] = useState({});
+
+  const [historicShifts] = useState(() => {
+    const obj = {};
+    loadUsers().filter(u=>u.role==="doctor").forEach((d,i) => { obj[d.name]=Math.floor(rng(i*37)*40)+10; });
+    return obj;
+  });
+
+  useEffect(() => { setSchedule(buildEmptySchedule(year, month)); }, [year, month]);
+
+  const onToast = (msg, type="info") => setToast({msg, type});
+
+  function handleNotify() {
+    onToast(`🔔 Notificação enviada para ${doctors.length} médicos: escala de ${MONTHS[month]} ${year} publicada.`, "success");
+  }
+
+  function handleAvailChange(day, value) {
+    setAllAvailabilities(prev => ({...prev, [user.name]: {...prev[user.name], [day]: value}}));
+  }
+
+  if (!user) return <AuthScreen onLogin={u => { setUser(u); onToast(`Bem-vindo, ${u.name}!`, "success"); }} />;
+
+  const isSubmitted = submitted[`${user.name}-${year}-${month}`];
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#F1F5F9", fontFamily:"'Segoe UI',system-ui,sans-serif", padding:"18px 14px" }}>
+      <style>{`@keyframes slideIn{from{transform:translateX(100px);opacity:0}to{transform:translateX(0);opacity:1}}`}</style>
+
+      {/* Nav */}
+      <div style={{ maxWidth:1050, margin:"0 auto 14px", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <div style={{ width:32, height:32, background:"linear-gradient(135deg,#4338CA,#7C3AED)", borderRadius:8, display:"flex", alignItems:"center", justifyContent:"center", fontSize:16 }}>🏥</div>
+          <span style={{fontWeight:800,color:"#0F172A",fontSize:15}}>Turnos Médicos</span>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{fontSize:12,color:"#64748B"}}>
+            <span style={{fontWeight:700,color:"#374151"}}>{user.name}</span>
+            {" · "}
+            <span style={{ background:user.role==="coordinator"?"#EEF2FF":"#F0FDF4", color:user.role==="coordinator"?"#4338CA":"#15803D", borderRadius:20, padding:"2px 8px", fontSize:11, fontWeight:700 }}>
+              {user.role==="coordinator"?"Coordenador":"Médico"}
+            </span>
+          </div>
+          <button onClick={()=>setUser(null)} style={{background:"none",border:"1px solid #E2E8F0",borderRadius:8,padding:"5px 12px",fontSize:12,cursor:"pointer",color:"#64748B",fontFamily:"inherit"}}>Sair</button>
+        </div>
+      </div>
+
+      {user.role==="coordinator" ? (
+        <CoordinatorView
+          user={user} year={year} month={month} setYear={setYear} setMonth={setMonth}
+          doctors={doctors} allAvailabilities={allAvailabilities}
+          schedule={schedule} setSchedule={setSchedule}
+          historicShifts={historicShifts}
+          onNotify={handleNotify} onToast={onToast}
+        />
+      ) : (
+        <DoctorView
+          user={user} year={year} month={month} setYear={setYear} setMonth={setMonth}
+          availability={allAvailabilities[user.name]||initAvail(year,month)}
+          onAvailChange={handleAvailChange}
+          onSubmit={()=>{setSubmitted(p=>({...p,[`${user.name}-${year}-${month}`]:true}));onToast("Disponibilidades submetidas!","success");}}
+          submitted={isSubmitted}
+        />
+      )}
+
+      {toast && <Toast message={toast.msg} type={toast.type} onClose={()=>setToast(null)}/>}
+    </div>
+  );
+}
+
+window.__AppComponent = App;
+
+const container = document.getElementById('root');
+const root = ReactDOM.createRoot(container);
+root.render(React.createElement(window.__AppComponent));
+</script>
+</body>
+</html>
