@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Turnos Médicos</title>
+<title>Turnos Medicos</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
@@ -550,7 +550,7 @@ function DoctorView({ user, year, month, setYear, setMonth, availability, onAvai
 
 // ─── COORDINATOR VIEW ─────────────────────────────────────────────────────────
 
-function CoordinatorView({ user, year, month, setYear, setMonth, allUsers, doctors, allAvailabilities, schedule, setSchedule, historicShifts, onNotify, onToast, onRoleChange }) {
+function CoordinatorView({ user, year, month, setYear, setMonth, allUsers, doctors, allAvailabilities, schedule, setSchedule, historicShifts, onNotify, onToast, onRoleChange, onRemoveUser, onAddUser }) {
   const days = getDaysInMonth(year, month);
   const firstDay = getFirstDay(year, month);
   const [selectedDay, setSelectedDay] = useState(null);
@@ -559,6 +559,10 @@ function CoordinatorView({ user, year, month, setYear, setMonth, allUsers, docto
   const [isRunning, setIsRunning] = useState(false);
   const [exporting, setExporting] = useState(null);
   const [confirmTransfer, setConfirmTransfer] = useState(null);
+  const [confirmRemove, setConfirmRemove] = useState(null);
+  const [showInvite, setShowInvite] = useState(false);
+  const [inviteForm, setInviteForm] = useState({name:"",specialty:"",initials:"",email:"",password:""});
+  const [inviteError, setInviteError] = useState("");
 
   function handleAutoAssign() {
     setIsRunning(true);
@@ -823,16 +827,22 @@ function CoordinatorView({ user, year, month, setYear, setMonth, allUsers, docto
           </table>
         </div>
       ) : (
-        /* ── TEAM VIEW ── */
+        /* team view */
         <div style={{background:"#fff",borderRadius:16,boxShadow:"0 2px 12px rgba(0,0,0,0.06)",overflow:"hidden"}}>
-          <div style={{padding:"16px 20px",borderBottom:"1px solid #F1F5F9",background:"#F8FAFC"}}>
-            <div style={{fontSize:14,fontWeight:700,color:"#0F172A"}}>Gestão da Equipa</div>
-            <div style={{fontSize:12,color:"#94A3B8",marginTop:2}}>Promove um médico a coordenador. O teu papel passa para essa pessoa — tu ficas como médico.</div>
+          <div style={{padding:"16px 20px",borderBottom:"1px solid #F1F5F9",background:"#F8FAFC",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10}}>
+            <div>
+              <div style={{fontSize:14,fontWeight:700,color:"#0F172A"}}>Gestão da Equipa</div>
+              <div style={{fontSize:12,color:"#94A3B8",marginTop:2}}>{allUsers.length} membros</div>
+            </div>
+            <button onClick={()=>{setShowInvite(true);setInviteError("");setInviteForm({name:"",specialty:"",initials:"",email:"",password:""});}}
+              style={{background:"linear-gradient(135deg,#4338CA,#6D28D9)",color:"#fff",border:"none",borderRadius:10,padding:"9px 18px",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+              + Convidar médico
+            </button>
           </div>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
             <thead>
               <tr style={{background:"#F8FAFC"}}>
-                {["Nome","Especialidade","Sigla","Papel","Ação"].map((h,i)=>(
+                {["Nome","Especialidade","Sigla","Papel","Promover","Remover"].map((h,i)=>(
                   <th key={i} style={{padding:"11px 16px",textAlign:"left",fontSize:11,fontWeight:700,color:"#64748B",letterSpacing:1,borderBottom:"1px solid #E2E8F0"}}>{h}</th>
                 ))}
               </tr>
@@ -847,21 +857,29 @@ function CoordinatorView({ user, year, month, setYear, setMonth, allUsers, docto
                   </td>
                   <td style={{padding:"11px 16px"}}>
                     <span style={{background:u.role==="coordinator"?"#EEF2FF":"#F0FDF4",color:u.role==="coordinator"?"#4338CA":"#15803D",borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:700}}>
-                      {u.role==="coordinator"?"👑 Coordenador":"👩\u200d⚕️ Médico"}
+                      {u.role==="coordinator"?"👑 Coord.":"👩‍⚕️ Médico"}
                     </span>
                   </td>
                   <td style={{padding:"11px 16px"}}>
                     {u.role==="doctor" ? (
-                      <button
-                        onClick={()=>setConfirmTransfer({name:u.name,email:u.email})}
-                        style={{background:"#EEF2FF",color:"#4338CA",border:"1px solid #C7D2FE",borderRadius:8,padding:"6px 14px",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}
-                      >
-                        Promover a Coordenador
+                      <button onClick={()=>setConfirmTransfer({name:u.name,email:u.email})}
+                        style={{background:"#EEF2FF",color:"#4338CA",border:"1px solid #C7D2FE",borderRadius:8,padding:"5px 12px",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                        Promover
                       </button>
                     ) : u.email===user.email ? (
-                      <span style={{fontSize:12,color:"#94A3B8",fontStyle:"italic"}}>Tu (coordenador atual)</span>
+                      <span style={{fontSize:12,color:"#94A3B8",fontStyle:"italic"}}>Tu</span>
                     ) : (
-                      <span style={{fontSize:12,color:"#94A3B8",fontStyle:"italic"}}>Coordenador</span>
+                      <span style={{fontSize:12,color:"#94A3B8"}}>&#8212;</span>
+                    )}
+                  </td>
+                  <td style={{padding:"11px 16px"}}>
+                    {u.email!==user.email ? (
+                      <button onClick={()=>setConfirmRemove({name:u.name,email:u.email})}
+                        style={{background:"#FEF2F2",color:"#DC2626",border:"1px solid #FECACA",borderRadius:8,padding:"5px 12px",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                        Remover
+                      </button>
+                    ) : (
+                      <span style={{fontSize:12,color:"#94A3B8"}}>&#8212;</span>
                     )}
                   </td>
                 </tr>
@@ -871,7 +889,70 @@ function CoordinatorView({ user, year, month, setYear, setMonth, allUsers, docto
         </div>
       )}
 
-      {/* Confirm transfer modal */}
+      {/* Remove modal */}
+      {confirmRemove && (
+        <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,0.6)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+          <div style={{background:"#fff",borderRadius:20,padding:32,maxWidth:400,width:"100%",boxShadow:"0 24px 64px rgba(0,0,0,0.3)"}}>
+            <div style={{fontSize:32,textAlign:"center",marginBottom:12}}>🗑️</div>
+            <div style={{fontSize:18,fontWeight:800,color:"#0F172A",textAlign:"center",marginBottom:8}}>Remover membro</div>
+            <div style={{fontSize:14,color:"#64748B",textAlign:"center",marginBottom:24,lineHeight:1.6}}>
+              Tens a certeza que queres remover <strong>{confirmRemove.name}</strong>?<br/>
+              Esta pessoa perde acesso imediatamente.
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <button onClick={()=>setConfirmRemove(null)}
+                style={{flex:1,background:"#F8FAFC",color:"#374151",border:"1px solid #E2E8F0",borderRadius:10,padding:12,fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                Cancelar
+              </button>
+              <button onClick={()=>{onRemoveUser(confirmRemove.email);setConfirmRemove(null);}}
+                style={{flex:1,background:"#DC2626",color:"#fff",border:"none",borderRadius:10,padding:12,fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                Remover
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Invite modal */}
+      {showInvite && (
+        <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,0.6)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+          <div style={{background:"#fff",borderRadius:20,padding:32,maxWidth:440,width:"100%",boxShadow:"0 24px 64px rgba(0,0,0,0.3)"}}>
+            <div style={{fontSize:18,fontWeight:800,color:"#0F172A",marginBottom:4}}>Convidar médico</div>
+            <div style={{fontSize:13,color:"#94A3B8",marginBottom:20}}>Preenche os dados e partilha as credenciais com o novo membro.</div>
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              {[["name","Nome completo","text"],["specialty","Especialidade","text"],["email","Email","email"],["password","Password","password"]].map(([f,ph,t])=>(
+                <input key={f} type={t} placeholder={ph} value={inviteForm[f]}
+                  onChange={e=>setInviteForm(p=>({...p,[f]:e.target.value}))}
+                  style={{width:"100%",background:"#F8FAFC",border:"1px solid #E2E8F0",borderRadius:10,padding:"11px 14px",fontSize:13,color:"#0F172A",fontFamily:"inherit",outline:"none",boxSizing:"border-box"}}/>
+              ))}
+              <input type="text" placeholder="Sigla (3 letras)" maxLength={3} value={inviteForm.initials}
+                onChange={e=>setInviteForm(p=>({...p,initials:e.target.value.toUpperCase()}))}
+                style={{width:"100%",background:"#F8FAFC",border:"1px solid #E2E8F0",borderRadius:10,padding:"11px 14px",fontSize:13,color:"#0F172A",fontFamily:"inherit",outline:"none",boxSizing:"border-box",textTransform:"uppercase"}}/>
+              {inviteError && <div style={{background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:8,padding:"9px 13px",color:"#DC2626",fontSize:13}}>{inviteError}</div>}
+            </div>
+            <div style={{display:"flex",gap:10,marginTop:20}}>
+              <button onClick={()=>setShowInvite(false)}
+                style={{flex:1,background:"#F8FAFC",color:"#374151",border:"1px solid #E2E8F0",borderRadius:10,padding:12,fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                Cancelar
+              </button>
+              <button onClick={()=>{
+                const f=inviteForm;
+                if(!f.name||!f.specialty||!f.initials||!f.email||!f.password){setInviteError("Preenche todos os campos.");return;}
+                if(f.initials.length!==3){setInviteError("Sigla deve ter 3 letras.");return;}
+                if(!f.email.includes("@")){setInviteError("Email inválido.");return;}
+                if(allUsers.find(u=>u.email===f.email)){setInviteError("Email já registado.");return;}
+                onAddUser({name:f.name,specialty:f.specialty,initials:f.initials.toUpperCase(),email:f.email,password:f.password,role:"doctor"});
+                setShowInvite(false);
+              }}
+                style={{flex:1,background:"linear-gradient(135deg,#4338CA,#6D28D9)",color:"#fff",border:"none",borderRadius:10,padding:12,fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                Adicionar à equipa
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Transfer modal */}
       {confirmTransfer && (
         <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,0.6)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
           <div style={{background:"#fff",borderRadius:20,padding:32,maxWidth:420,width:"100%",boxShadow:"0 24px 64px rgba(0,0,0,0.3)"}}>
@@ -882,19 +963,15 @@ function CoordinatorView({ user, year, month, setYear, setMonth, allUsers, docto
               Tu passas a ser <strong>Médico</strong> e perdes acesso ao painel de coordenação.
             </div>
             <div style={{background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:10,padding:"10px 14px",fontSize:13,color:"#DC2626",marginBottom:24,textAlign:"center"}}>
-              ⚠️ Esta ação não pode ser desfeita por ti. Só o novo coordenador pode reverter.
+              Esta ação só pode ser revertida pelo novo coordenador.
             </div>
             <div style={{display:"flex",gap:10}}>
-              <button
-                onClick={()=>setConfirmTransfer(null)}
-                style={{flex:1,background:"#F8FAFC",color:"#374151",border:"1px solid #E2E8F0",borderRadius:10,padding:12,fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}
-              >
+              <button onClick={()=>setConfirmTransfer(null)}
+                style={{flex:1,background:"#F8FAFC",color:"#374151",border:"1px solid #E2E8F0",borderRadius:10,padding:12,fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
                 Cancelar
               </button>
-              <button
-                onClick={()=>{onRoleChange(confirmTransfer.email,"coordinator");setConfirmTransfer(null);}}
-                style={{flex:1,background:"linear-gradient(135deg,#4338CA,#6D28D9)",color:"#fff",border:"none",borderRadius:10,padding:12,fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}
-              >
+              <button onClick={()=>{onRoleChange(confirmTransfer.email,"coordinator");setConfirmTransfer(null);}}
+                style={{flex:1,background:"linear-gradient(135deg,#4338CA,#6D28D9)",color:"#fff",border:"none",borderRadius:10,padding:12,fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
                 Confirmar transferência
               </button>
             </div>
@@ -970,17 +1047,19 @@ function App() {
 
   const onToast = (msg, type="info") => setToast({msg, type});
 
-  function handleRoleChange(targetEmail, newRole) {
-    const updated = allUsers.map(u => {
-      if (u.email === targetEmail) return { ...u, role: "coordinator" };
-      if (u.email === user.email) return { ...u, role: "doctor" };
-      return u;
-    });
+  function handleRemoveUser(targetEmail) {
+    const removed = allUsers.find(u => u.email === targetEmail);
+    const updated = allUsers.filter(u => u.email !== targetEmail);
     saveUsers(updated);
     setAllUsersState([...updated]);
-    const newCoord = updated.find(u => u.email === targetEmail);
-    onToast(`${newCoord.name} é agora Coordenador. O teu papel mudou para Médico.`, "info");
-    setUser(u => ({ ...u, role: "doctor" }));
+    onToast(removed.name + " removido da equipa.", "info");
+  }
+
+  function handleAddUser(newUser) {
+    const updated = [...allUsers, newUser];
+    saveUsers(updated);
+    setAllUsersState([...updated]);
+    onToast(newUser.name + " adicionado à equipa!", "success");
   }
 
   function handleNotify() {
@@ -1023,7 +1102,7 @@ function App() {
           allUsers={allUsers} doctors={doctors} allAvailabilities={allAvailabilities}
           schedule={schedule} setSchedule={setSchedule}
           historicShifts={historicShifts}
-          onNotify={handleNotify} onToast={onToast} onRoleChange={handleRoleChange}
+          onNotify={handleNotify} onToast={onToast} onRoleChange={handleRoleChange} onRemoveUser={handleRemoveUser} onAddUser={handleAddUser}
         />
       ) : (
         <DoctorView
