@@ -6,7 +6,6 @@
 <title>Turnos Medicos</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; }
@@ -21,20 +20,777 @@
 <body>
 <div id="root"></div>
 <script>
-  const { useState, useEffect, useRef } = React;
-</script>
-<script type="text/babel" data-presets="react">
-
-
-
-// ─── CONSTANTS ───────────────────────────────────────────────────────────────
-
-const MONTHS = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
-const WEEKDAYS = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
-
+const { useState, useEffect, useRef } = React;
+const MONTHS = ["Janeiro", "Fevereiro", "Mar\xE7o", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+const WEEKDAYS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "S\xE1b"];
 const AVAIL_OPTIONS = [
-  { value: "",     label: "Indisponível", icon: "✕",    color: "#F3F4F6", text: "#9CA3AF" },
-  { value: "M",    label: "Manhã",        icon: "☀️",   color: "#FEF3C7", text: "#92400E" },
+  { value: "", label: "Indispon\xEDvel", icon: "\u2715", color: "#F3F4F6", text: "#9CA3AF" },
+  { value: "M", label: "Manh\xE3", icon: "\u2600\uFE0F", color: "#FEF3C7", text: "#92400E" },
+  { value: "T", label: "Tarde", icon: "\u{1F324}", color: "#DBEAFE", text: "#1E40AF" },
+  { value: "N", label: "Noite", icon: "\u{1F319}", color: "#EDE9FE", text: "#5B21B6" },
+  { value: "MT", label: "M ou T", icon: "\u2600\u{1F324}", color: "#D1FAE5", text: "#065F46" },
+  { value: "MN", label: "M ou N", icon: "\u2600\u{1F319}", color: "#FCE7F3", text: "#9D174D" },
+  { value: "TN", label: "T ou N", icon: "\u{1F324}\u{1F319}", color: "#FEF9C3", text: "#713F12" },
+  { value: "MTN", label: "Qualquer", icon: "\u2713\u2713", color: "#DCFCE7", text: "#14532D" },
+  { value: "MT!", label: "M+T juntos", icon: "\u2600\u{1F324}!", color: "#FFE4E6", text: "#9F1239" },
+  { value: "MN!", label: "M+N juntos", icon: "\u2600\u{1F319}!", color: "#FDE8FF", text: "#701A75" },
+  { value: "TN!", label: "T+N juntos", icon: "\u{1F324}\u{1F319}!", color: "#FFF7CD", text: "#78350F" }
+];
+const SHIFT_META = {
+  M: { label: "Manh\xE3", time: "08\u201314h", bg: "#FFFBEB", border: "#FDE68A", text: "#92400E", icon: "\u2600\uFE0F" },
+  T: { label: "Tarde", time: "14\u201320h", bg: "#EFF6FF", border: "#BFDBFE", text: "#1E40AF", icon: "\u{1F324}" },
+  N: { label: "Noite", time: "20\u201308h", bg: "#F5F3FF", border: "#DDD6FE", text: "#5B21B6", icon: "\u{1F319}" }
+};
+const getDaysInMonth = (y, m) => new Date(y, m + 1, 0).getDate();
+const getFirstDay = (y, m) => new Date(y, m, 1).getDay();
+const getAvailOpt = (v) => AVAIL_OPTIONS.find((o) => o.value === v) || AVAIL_OPTIONS[0];
+function initAvail(year, month) {
+  const days = getDaysInMonth(year, month);
+  const obj = {};
+  for (let d = 1; d <= days; d++) obj[d] = "";
+  return obj;
+}
+function buildEmptySchedule(year, month) {
+  const days = getDaysInMonth(year, month);
+  const s = {};
+  for (let d = 1; d <= days; d++) s[d] = { M: null, T: null, N: null };
+  return s;
+}
+function shiftsInAvail(avail) {
+  if (!avail) return [];
+  return avail.replace("!", "").split("").filter((c) => ["M", "T", "N"].includes(c));
+}
+const isBundle = (avail) => typeof avail === "string" && avail.endsWith("!");
+function autoAssign(year, month, allAvailabilities, historicShifts, doctors) {
+  const days = getDaysInMonth(year, month);
+  const schedule = buildEmptySchedule(year, month);
+  const log = [];
+  const monthCount = {};
+  doctors.forEach((d) => {
+    monthCount[d.name] = 0;
+  });
+  const getAvail = (name, day) => allAvailabilities[name]?.[day] || "";
+  const breadth = (name, day) => shiftsInAvail(getAvail(name, day)).length;
+  const canCover = (name, day, sh) => shiftsInAvail(getAvail(name, day)).includes(sh);
+  const isToday = (name, day) => {
+    const s = schedule[day];
+    return s.M === name || s.T === name || s.N === name;
+  };
+  function buildSlots() {
+    const slots = [];
+    for (let d = 1; d <= days; d++) {
+      for (const sh of ["M", "T", "N"]) {
+        if (schedule[d][sh]) continue;
+        const count = doctors.filter((doc) => {
+          if (!canCover(doc.name, d, sh) || isToday(doc.name, d)) return false;
+          const av = getAvail(doc.name, d);
+          if (isBundle(av)) return shiftsInAvail(av).every((s2) => !schedule[d][s2]);
+          return true;
+        }).length;
+        slots.push({ day: d, shift: sh, count });
+      }
+    }
+    return slots.sort((a, b) => a.count - b.count || Math.random() - 0.5);
+  }
+  function rank(candidates, day) {
+    return [...candidates].sort((a, b) => {
+      const ba = breadth(a, day), bb = breadth(b, day);
+      if (bb !== ba) return bb - ba;
+      const ha = historicShifts[a] || 0, hb = historicShifts[b] || 0;
+      if (ha !== hb) return hb - ha;
+      const ma = monthCount[a] || 0, mb = monthCount[b] || 0;
+      if (ma !== mb) return mb - ma;
+      return Math.random() - 0.5;
+    });
+  }
+  let guard = days * 9;
+  while (guard-- > 0) {
+    const slots = buildSlots();
+    if (!slots.length) break;
+    const { day, shift } = slots[0];
+    const candidates = doctors.filter((doc) => {
+      if (!canCover(doc.name, day, shift) || isToday(doc.name, day)) return false;
+      const av = getAvail(doc.name, day);
+      if (isBundle(av)) return shiftsInAvail(av).every((s2) => !schedule[day][s2]);
+      return true;
+    }).map((d) => d.name);
+    if (!candidates.length) {
+      schedule[day][shift] = "__EMPTY__";
+      log.push({ type: "warn", msg: `Dia ${day} turno ${shift}: sem m\xE9dico dispon\xEDvel` });
+      continue;
+    }
+    const ranked = rank(candidates, day);
+    const chosen = ranked[0];
+    const avail = getAvail(chosen, day);
+    if (isBundle(avail)) {
+      shiftsInAvail(avail).forEach((s2) => {
+        schedule[day][s2] = chosen;
+        monthCount[chosen]++;
+      });
+      log.push({ type: "bundle", msg: `Dia ${day}: ${chosen} \u2192 ${shiftsInAvail(avail).join("+")} (conjunto)` });
+    } else {
+      schedule[day][shift] = chosen;
+      monthCount[chosen]++;
+      const why = slots[0].count === 1 ? "\xFAnico dispon\xEDvel" : breadth(chosen, day) > 1 ? `disponib. alargada (${avail})` : "mais turnos acumulados";
+      log.push({ type: "assign", shift, msg: `Dia ${day} ${shift}: ${chosen} \u2014 ${why}` });
+    }
+  }
+  for (let d = 1; d <= days; d++)
+    for (const sh of ["M", "T", "N"])
+      if (schedule[d][sh] === "__EMPTY__") schedule[d][sh] = null;
+  return { schedule, log };
+}
+async function exportPDF(schedule, year, month, doctors) {
+  const { jsPDF } = await import("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
+  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  const days = getDaysInMonth(year, month);
+  const monthName = MONTHS[month];
+  doc.setFillColor(15, 23, 42);
+  doc.rect(0, 0, 297, 20, "F");
+  doc.setTextColor(241, 245, 249);
+  doc.setFontSize(14);
+  doc.setFont("helvetica", "bold");
+  doc.text(`Escala de Turnos \u2014 ${monthName} ${year}`, 14, 13);
+  doc.setFontSize(9);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(148, 163, 184);
+  doc.text(`Gerado em ${(/* @__PURE__ */ new Date()).toLocaleDateString("pt-PT")}`, 240, 13);
+  const colW = [14, 18, 62, 62, 62];
+  const headers = ["Dia", "Sem.", "Manh\xE3 (08\u201314h)", "Tarde (14\u201320h)", "Noite (20\u201308h)"];
+  let y = 26;
+  doc.setFillColor(248, 250, 252);
+  doc.rect(10, y - 5, 277, 8, "F");
+  doc.setTextColor(100, 116, 139);
+  doc.setFontSize(8);
+  doc.setFont("helvetica", "bold");
+  let x = 10;
+  headers.forEach((h, i) => {
+    doc.text(h, x + 2, y);
+    x += colW[i];
+  });
+  y += 4;
+  const shiftColors = { M: [255, 251, 235], T: [239, 246, 255], N: [245, 243, 255] };
+  const shiftText = { M: [146, 64, 14], T: [30, 64, 175], N: [91, 33, 182] };
+  for (let d = 1; d <= days; d++) {
+    if (y > 185) {
+      doc.addPage();
+      y = 15;
+    }
+    const s = schedule[d] || {};
+    const dayName = new Date(year, month, d).toLocaleDateString("pt-PT", { weekday: "short" });
+    const isWeekend = [0, 6].includes(new Date(year, month, d).getDay());
+    if (isWeekend) {
+      doc.setFillColor(250, 250, 250);
+      doc.rect(10, y - 4, 277, 7, "F");
+    }
+    doc.setFontSize(8);
+    doc.setFont("helvetica", isWeekend ? "bold" : "normal");
+    doc.setTextColor(isWeekend ? 239 : 55, isWeekend ? 68 : 65, isWeekend ? 68 : 81);
+    x = 10;
+    doc.text(String(d), x + 2, y);
+    x += colW[0];
+    doc.text(dayName, x + 2, y);
+    x += colW[1];
+    ["M", "T", "N"].forEach((sh, si) => {
+      const name = s[sh];
+      if (name) {
+        const [r, g, b] = shiftColors[sh];
+        doc.setFillColor(r, g, b);
+        doc.roundedRect(x, y - 4, colW[si + 2] - 2, 6, 1, 1, "F");
+        const [tr, tg, tb] = shiftText[sh];
+        doc.setTextColor(tr, tg, tb);
+        doc.setFont("helvetica", "bold");
+        doc.text(name, x + 2, y, { maxWidth: colW[si + 2] - 4 });
+      } else {
+        doc.setTextColor(203, 213, 225);
+        doc.setFont("helvetica", "normal");
+        doc.text("\u2014", x + 2, y);
+      }
+      x += colW[si + 2];
+    });
+    y += 7;
+  }
+  doc.addPage();
+  doc.setFillColor(15, 23, 42);
+  doc.rect(0, 0, 297, 20, "F");
+  doc.setTextColor(241, 245, 249);
+  doc.setFontSize(14);
+  doc.setFont("helvetica", "bold");
+  doc.text(`Resumo de Turnos \u2014 ${monthName} ${year}`, 14, 13);
+  y = 30;
+  const sumH = ["M\xE9dico", "Sigla", "Especialidade", "Manh\xE3", "Tarde", "Noite", "Total"];
+  const sumW = [70, 20, 50, 20, 20, 20, 20];
+  doc.setFillColor(248, 250, 252);
+  doc.rect(10, y - 5, 225, 8, "F");
+  doc.setTextColor(100, 116, 139);
+  doc.setFontSize(8);
+  doc.setFont("helvetica", "bold");
+  x = 10;
+  sumH.forEach((h, i) => {
+    doc.text(h, x + 2, y);
+    x += sumW[i];
+  });
+  y += 4;
+  doctors.forEach((doc2, idx) => {
+    let mC = 0, tC = 0, nC = 0;
+    for (let d = 1; d <= days; d++) {
+      const s = schedule[d] || {};
+      if (s.M === doc2.name) mC++;
+      if (s.T === doc2.name) tC++;
+      if (s.N === doc2.name) nC++;
+    }
+    if (idx % 2 === 0) {
+      doc.setFillColor(250, 250, 250);
+      doc.rect(10, y - 4, 225, 7, "F");
+    }
+    doc.setTextColor(55, 65, 81);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    x = 10;
+    [doc2.name, doc2.initials, doc2.specialty, mC, tC, nC, mC + tC + nC].forEach((v, i) => {
+      doc.text(String(v), x + 2, y);
+      x += sumW[i];
+    });
+    y += 7;
+  });
+  doc.save(`escala-${monthName.toLowerCase()}-${year}.pdf`);
+}
+function exportExcel(schedule, year, month, doctors, historicShifts) {
+  const wb = XLSX.utils.book_new();
+  const days = getDaysInMonth(year, month);
+  const monthName = MONTHS[month];
+  const rows1 = [["Dia", "Dia Semana", "Manh\xE3 (08-14h)", "Tarde (14-20h)", "Noite (20-08h)"]];
+  for (let d = 1; d <= days; d++) {
+    const s = schedule[d] || {};
+    rows1.push([d, new Date(year, month, d).toLocaleDateString("pt-PT", { weekday: "long" }), s.M || "", s.T || "", s.N || ""]);
+  }
+  const ws1 = XLSX.utils.aoa_to_sheet(rows1);
+  ws1["!cols"] = [{ wch: 6 }, { wch: 14 }, { wch: 28 }, { wch: 28 }, { wch: 28 }];
+  XLSX.utils.book_append_sheet(wb, ws1, `Escala ${monthName}`);
+  const rows2 = [["M\xE9dico", "Sigla", "Especialidade", "Manh\xE3", "Tarde", "Noite", "Total M\xEAs"]];
+  doctors.forEach((doc) => {
+    let m = 0, t = 0, n = 0;
+    for (let d = 1; d <= days; d++) {
+      const s = schedule[d] || {};
+      if (s.M === doc.name) m++;
+      if (s.T === doc.name) t++;
+      if (s.N === doc.name) n++;
+    }
+    rows2.push([doc.name, doc.initials, doc.specialty, m, t, n, m + t + n]);
+  });
+  rows2.push([]);
+  rows2.push([
+    "TOTAL",
+    "",
+    "",
+    `=SUM(D2:D${doctors.length + 1})`,
+    `=SUM(E2:E${doctors.length + 1})`,
+    `=SUM(F2:F${doctors.length + 1})`,
+    `=SUM(G2:G${doctors.length + 1})`
+  ]);
+  const ws2 = XLSX.utils.aoa_to_sheet(rows2);
+  ws2["!cols"] = [{ wch: 26 }, { wch: 8 }, { wch: 20 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 12 }];
+  XLSX.utils.book_append_sheet(wb, ws2, `Totais ${monthName}`);
+  const pastMonths = [];
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(year, month - i, 1);
+    pastMonths.push({ y: d.getFullYear(), m: d.getMonth(), label: `${MONTHS[d.getMonth()].slice(0, 3)} ${d.getFullYear()}` });
+  }
+  const rows3 = [["M\xE9dico", "Sigla", "Especialidade", ...pastMonths.map((p) => p.label), "Total 12M", "M 12M", "T 12M", "N 12M"]];
+  const rng = (s) => {
+    let x = Math.sin(s + 1) * 1e4;
+    return Math.floor((x - Math.floor(x)) * 8);
+  };
+  doctors.forEach((doc) => {
+    const monthly = pastMonths.map((p, pi) => {
+      if (pi === 11) {
+        let tot = 0;
+        for (let d = 1; d <= days; d++) {
+          const s = schedule[d] || {};
+          if (s.M === doc.name || s.T === doc.name || s.N === doc.name) tot++;
+        }
+        return tot;
+      }
+      return rng(doc.name.length * 13 + pi * 7 + doc.initials.charCodeAt(0));
+    });
+    const total12 = historicShifts[doc.name] || monthly.reduce((a, b) => a + b, 0);
+    const mH = Math.round(total12 * 0.35), tH = Math.round(total12 * 0.35), nH = total12 - mH - tH;
+    rows3.push([doc.name, doc.initials, doc.specialty, ...monthly, total12, mH, tH, nH]);
+  });
+  const ws3 = XLSX.utils.aoa_to_sheet(rows3);
+  ws3["!cols"] = [{ wch: 26 }, { wch: 8 }, { wch: 20 }, ...pastMonths.map(() => ({ wch: 12 })), { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 }];
+  XLSX.utils.book_append_sheet(wb, ws3, "Hist\xF3rico 12 Meses");
+  XLSX.writeFile(wb, `turnos-${monthName.toLowerCase()}-${year}.xlsx`);
+}
+function loadUsers() {
+  return window._turnos_users || [];
+}
+function saveUsers(users) {
+  window._turnos_users = users;
+}
+function Toast({ message, type, onClose }) {
+  useEffect(() => {
+    const t = setTimeout(onClose, 4500);
+    return () => clearTimeout(t);
+  }, []);
+  const cfg = { success: ["#ECFDF5", "#059669", "#6EE7B7", "\u2713"], info: ["#EFF6FF", "#2563EB", "#BFDBFE", "\u2139\uFE0F"], warn: ["#FFF7ED", "#D97706", "#FED7AA", "\u26A0\uFE0F"] };
+  const [bg, text, border, icon] = cfg[type] || cfg.info;
+  return /* @__PURE__ */ React.createElement("div", { style: { position: "fixed", bottom: 24, right: 24, zIndex: 999, background: bg, border: `1px solid ${border}`, color: text, borderRadius: 12, padding: "13px 18px", fontSize: 14, fontWeight: 600, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", maxWidth: 360, display: "flex", alignItems: "center", gap: 10, animation: "slideIn 0.3s ease" } }, /* @__PURE__ */ React.createElement("span", null, icon), /* @__PURE__ */ React.createElement("span", { style: { flex: 1 } }, message), /* @__PURE__ */ React.createElement("button", { onClick: onClose, style: { background: "none", border: "none", cursor: "pointer", color: text, fontSize: 16, padding: 0 } }, "\u2715"));
+}
+function AuthScreen({ onLogin }) {
+  const [mode, setMode] = useState("login");
+  const [form, setForm] = useState({ name: "", specialty: "", initials: "", email: "", password: "", role: "doctor" });
+  const [error, setError] = useState("");
+  function handleSubmit() {
+    setError("");
+    if (mode === "register") {
+      if (!form.name || !form.specialty || !form.initials || !form.email || !form.password) {
+        setError("Preenche todos os campos.");
+        return;
+      }
+      if (form.initials.length !== 3) {
+        setError("A sigla deve ter exatamente 3 letras.");
+        return;
+      }
+      if (!form.email.includes("@")) {
+        setError("Email inv\xE1lido.");
+        return;
+      }
+      const users = loadUsers();
+      if (users.find((u) => u.email === form.email)) {
+        setError("Email j\xE1 registado.");
+        return;
+      }
+      const newUser = { ...form, initials: form.initials.toUpperCase(), role: "doctor" };
+      saveUsers([...users, newUser]);
+      onLogin(newUser);
+    } else {
+      if (!form.email || !form.password) {
+        setError("Preenche email e password.");
+        return;
+      }
+      const user = loadUsers().find((u) => u.email === form.email && u.password === form.password);
+      if (!user) {
+        setError("Email ou password incorretos.");
+        return;
+      }
+      onLogin(user);
+    }
+  }
+  const inp = (field, placeholder, type = "text", extra = {}) => /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      type,
+      placeholder,
+      value: form[field],
+      onChange: (e) => setForm((p) => ({ ...p, [field]: e.target.value })),
+      onKeyDown: (e) => e.key === "Enter" && handleSubmit(),
+      style: { width: "100%", background: "#1E293B", border: "1px solid #334155", borderRadius: 10, padding: "12px 14px", fontSize: 14, color: "#F1F5F9", fontFamily: "inherit", outline: "none", boxSizing: "border-box", ...extra }
+    }
+  );
+  return /* @__PURE__ */ React.createElement("div", { style: { minHeight: "100vh", background: "linear-gradient(135deg,#0F172A 0%,#1E1B4B 100%)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Segoe UI',system-ui,sans-serif", padding: 20 } }, /* @__PURE__ */ React.createElement("style", null, `@keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}`), /* @__PURE__ */ React.createElement("div", { style: { width: "100%", maxWidth: 420, animation: "fadeUp 0.4s ease" } }, /* @__PURE__ */ React.createElement("div", { style: { textAlign: "center", marginBottom: 32 } }, /* @__PURE__ */ React.createElement("div", { style: { width: 64, height: 64, background: "linear-gradient(135deg,#4338CA,#7C3AED)", borderRadius: 18, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 30, margin: "0 auto 16px", boxShadow: "0 8px 24px rgba(67,56,202,0.4)" } }, "\u{1F3E5}"), /* @__PURE__ */ React.createElement("div", { style: { color: "#A5B4FC", fontSize: 11, letterSpacing: 3, textTransform: "uppercase", marginBottom: 6 } }, "Sistema de Gest\xE3o"), /* @__PURE__ */ React.createElement("h1", { style: { color: "#F1F5F9", fontSize: 26, fontWeight: 800, margin: 0 } }, "Turnos M\xE9dicos")), /* @__PURE__ */ React.createElement("div", { style: { background: "#1E293B", borderRadius: 20, padding: 32, boxShadow: "0 20px 60px rgba(0,0,0,0.4)" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", background: "#0F172A", borderRadius: 10, padding: 4, marginBottom: 24, gap: 4 } }, [["login", "Entrar"], ["register", "Registar"]].map(([m, l]) => /* @__PURE__ */ React.createElement("button", { key: m, onClick: () => {
+    setMode(m);
+    setError("");
+  }, style: { flex: 1, padding: "9px 0", background: mode === m ? "#4338CA" : "transparent", color: mode === m ? "#fff" : "#94A3B8", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", transition: "all 0.2s" } }, l))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 12 } }, mode === "register" && /* @__PURE__ */ React.createElement(React.Fragment, null, inp("name", "Nome completo"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 90px", gap: 10 } }, inp("specialty", "Especialidade"), inp("initials", "Sigla", "text", { textTransform: "uppercase", maxLength: 3 }))), inp("email", "Email", "email"), inp("password", "Password", "password"), error && /* @__PURE__ */ React.createElement("div", { style: { background: "#FEF2F2", border: "1px solid #FCA5A5", borderRadius: 8, padding: "10px 14px", color: "#DC2626", fontSize: 13 } }, error), /* @__PURE__ */ React.createElement("button", { onClick: handleSubmit, style: { background: "linear-gradient(135deg,#4338CA,#7C3AED)", color: "#fff", border: "none", borderRadius: 12, padding: 14, fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", marginTop: 4, boxShadow: "0 4px 16px rgba(67,56,202,0.35)" } }, mode === "login" ? "\u2192 Entrar" : "\u2192 Criar conta")), mode === "login" && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 16, padding: 12, background: "#0F172A", borderRadius: 10, fontSize: 11, color: "#64748B" } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, color: "#475569", marginBottom: 6 } }, "Demo \u2014 contas de teste:"), /* @__PURE__ */ React.createElement("div", null, "m\xE9dico@demo.pt / demo123 \xA0\xB7\xA0 M\xE9dico"), /* @__PURE__ */ React.createElement("div", null, "coord@demo.pt / demo123 \xA0\xB7\xA0 Coordenador")))));
+}
+function AvailPicker({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const opt = getAvailOpt(value);
+  useEffect(() => {
+    const h = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+  return /* @__PURE__ */ React.createElement("div", { ref, style: { position: "relative", display: "inline-block" } }, /* @__PURE__ */ React.createElement("button", { onClick: () => setOpen((o) => !o), title: opt.label, style: { background: opt.color, color: opt.text, border: "none", borderRadius: 6, padding: "2px 6px", fontSize: 11, fontFamily: "inherit", cursor: "pointer", fontWeight: 600, minWidth: 36 } }, opt.icon || "\u2715"), open && /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", zIndex: 200, top: "110%", left: 0, background: "#fff", borderRadius: 12, boxShadow: "0 8px 32px rgba(0,0,0,0.2)", padding: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, width: 230 } }, AVAIL_OPTIONS.map((o) => /* @__PURE__ */ React.createElement("button", { key: o.value, onClick: () => {
+    onChange(o.value);
+    setOpen(false);
+  }, style: { background: o.color, color: o.text, border: value === o.value ? "2px solid #374151" : "2px solid transparent", borderRadius: 8, padding: "6px 8px", fontSize: 11, cursor: "pointer", fontWeight: 600, textAlign: "left", fontFamily: "inherit" } }, o.icon, " ", o.label))));
+}
+function DoctorView({ user, year, month, setYear, setMonth, availability, onAvailChange, onSubmit, submitted }) {
+  const days = getDaysInMonth(year, month);
+  const firstDay = getFirstDay(year, month);
+  const today = /* @__PURE__ */ new Date();
+  const filled = Object.values(availability).filter((v) => v !== "").length;
+  const cells = [];
+  for (let i = 0; i < firstDay; i++) cells.push(null);
+  for (let d = 1; d <= days; d++) cells.push(d);
+  while (cells.length % 7 !== 0) cells.push(null);
+  return /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 840, margin: "0 auto" } }, /* @__PURE__ */ React.createElement("div", { style: { background: "linear-gradient(135deg,#0F172A,#1E293B)", borderRadius: 20, padding: "24px 28px", marginBottom: 20, display: "flex", justifyContent: "space-between", alignItems: "center", boxShadow: "0 4px 24px rgba(0,0,0,0.2)" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { color: "#94A3B8", fontSize: 11, letterSpacing: 2, textTransform: "uppercase" } }, "Portal de Disponibilidades"), /* @__PURE__ */ React.createElement("div", { style: { color: "#F1F5F9", fontSize: 20, fontWeight: 700, marginTop: 2 } }, user.name), /* @__PURE__ */ React.createElement("div", { style: { color: "#64748B", fontSize: 12, marginTop: 1 } }, user.specialty, " \xB7 ", user.initials)), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10 } }, /* @__PURE__ */ React.createElement("select", { value: month, onChange: (e) => setMonth(Number(e.target.value)), style: { background: "#1E293B", color: "#E2E8F0", border: "1px solid #334155", borderRadius: 8, padding: "8px 12px", fontSize: 13, fontFamily: "inherit" } }, MONTHS.map((m, i) => /* @__PURE__ */ React.createElement("option", { key: i, value: i }, m))), /* @__PURE__ */ React.createElement("select", { value: year, onChange: (e) => setYear(Number(e.target.value)), style: { background: "#1E293B", color: "#E2E8F0", border: "1px solid #334155", borderRadius: 8, padding: "8px 12px", fontSize: 13, fontFamily: "inherit" } }, [2025, 2026, 2027].map((y) => /* @__PURE__ */ React.createElement("option", { key: y, value: y }, y))))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 } }, AVAIL_OPTIONS.slice(1).map((o) => /* @__PURE__ */ React.createElement("span", { key: o.value, style: { background: o.color, color: o.text, borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 600 } }, o.icon, " ", o.label))), /* @__PURE__ */ React.createElement("div", { style: { background: "#FFF7ED", border: "1px solid #FED7AA", borderRadius: 10, padding: "9px 14px", marginBottom: 14, fontSize: 12, color: "#92400E" } }, /* @__PURE__ */ React.createElement("strong", null, "\u{1F4A1}"), " Op\xE7\xF5es com ", /* @__PURE__ */ React.createElement("strong", null, "!"), " indicam que s\xF3 aceitas a escala se ", /* @__PURE__ */ React.createElement("em", null, "ambos"), " os turnos forem atribu\xEDdos simultaneamente."), /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", borderRadius: 16, boxShadow: "0 2px 12px rgba(0,0,0,0.07)", overflow: "hidden", marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(7,1fr)", background: "#F8FAFC" } }, WEEKDAYS.map((w) => /* @__PURE__ */ React.createElement("div", { key: w, style: { textAlign: "center", padding: "9px 0", fontSize: 11, fontWeight: 700, color: "#64748B", letterSpacing: 1 } }, w))), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(7,1fr)" } }, cells.map((d, i) => {
+    if (!d) return /* @__PURE__ */ React.createElement("div", { key: `e${i}`, style: { borderTop: "1px solid #F1F5F9", padding: 6, minHeight: 68, background: "#FAFAFA" } });
+    const avail = availability[d];
+    const opt = getAvailOpt(avail);
+    const isToday = today.getDate() === d && today.getMonth() === month && today.getFullYear() === year;
+    return /* @__PURE__ */ React.createElement("div", { key: d, style: { borderTop: "1px solid #F1F5F9", borderLeft: i % 7 !== 0 ? "1px solid #F1F5F9" : "none", padding: 6, minHeight: 68, background: opt.color } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, fontWeight: 700, color: isToday ? "#fff" : "#374151", background: isToday ? "#3B82F6" : "transparent", borderRadius: "50%", width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center" } }, d), /* @__PURE__ */ React.createElement(AvailPicker, { value: avail, onChange: (v) => onAvailChange(d, v) })), avail && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: opt.text, fontWeight: 600 } }, opt.label));
+  }))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", background: submitted ? "#ECFDF5" : "#F8FAFC", border: `1px solid ${submitted ? "#6EE7B7" : "#E2E8F0"}`, borderRadius: 12, padding: "14px 20px" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: "#374151" } }, filled, " / ", days, " dias preenchidos"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: "#9CA3AF" } }, "Dias sem indica\xE7\xE3o = indispon\xEDvel")), /* @__PURE__ */ React.createElement("button", { onClick: onSubmit, disabled: submitted, style: { background: submitted ? "#10B981" : "#0F172A", color: "#fff", border: "none", borderRadius: 10, padding: "11px 24px", fontSize: 13, fontWeight: 700, cursor: submitted ? "default" : "pointer", fontFamily: "inherit" } }, submitted ? "\u2713 Submetido" : `Submeter ${MONTHS[month]}`)));
+}
+function CoordinatorView({ user, year, month, setYear, setMonth, allUsers, doctors, allAvailabilities, schedule, setSchedule, historicShifts, onNotify, onToast, onRoleChange, onRemoveUser, onAddUser }) {
+  const days = getDaysInMonth(year, month);
+  const firstDay = getFirstDay(year, month);
+  const [selectedDay, setSelectedDay] = useState(null);
+  const [view, setView] = useState("calendar");
+  const [autoLog, setAutoLog] = useState(null);
+  const [isRunning, setIsRunning] = useState(false);
+  const [exporting, setExporting] = useState(null);
+  const [confirmTransfer, setConfirmTransfer] = useState(null);
+  const [confirmRemove, setConfirmRemove] = useState(null);
+  const [showInvite, setShowInvite] = useState(false);
+  const [inviteForm, setInviteForm] = useState({ name: "", specialty: "", initials: "", email: "", password: "" });
+  const [inviteError, setInviteError] = useState("");
+  function handleAutoAssign() {
+    setIsRunning(true);
+    setTimeout(() => {
+      const result = autoAssign(year, month, allAvailabilities, historicShifts, doctors);
+      setSchedule(result.schedule);
+      setAutoLog(result.log);
+      setIsRunning(false);
+      const filled2 = Object.values(result.schedule).reduce((a, s) => a + (s.M ? 1 : 0) + (s.T ? 1 : 0) + (s.N ? 1 : 0), 0);
+      onToast(`Atribui\xE7\xE3o conclu\xEDda: ${filled2} turnos preenchidos`, "success");
+    }, 500);
+  }
+  async function handleExportPDF() {
+    setExporting("pdf");
+    try {
+      await exportPDF(schedule, year, month, doctors);
+      onToast("PDF exportado!", "success");
+    } catch (e) {
+      onToast("Erro PDF: " + e.message, "warn");
+    }
+    setExporting(null);
+  }
+  function handleExportExcel() {
+    setExporting("xlsx");
+    try {
+      exportExcel(schedule, year, month, doctors, historicShifts);
+      onToast("Excel exportado!", "success");
+    } catch (e) {
+      onToast("Erro Excel: " + e.message, "warn");
+    }
+    setExporting(null);
+  }
+  function assignDoctor(day, sh, name) {
+    setSchedule((prev) => ({ ...prev, [day]: { ...prev[day], [sh]: name } }));
+  }
+  function countShifts(name) {
+    let c = 0;
+    for (let d = 1; d <= days; d++) {
+      const s = schedule[d] || {};
+      if (s.M === name) c++;
+      if (s.T === name) c++;
+      if (s.N === name) c++;
+    }
+    return c;
+  }
+  function getAvailDoctors(day, sh) {
+    return doctors.filter((doc) => {
+      const av = allAvailabilities[doc.name]?.[day] || "";
+      return av && shiftsInAvail(av).includes(sh);
+    });
+  }
+  const filled = Object.values(schedule).reduce((a, s) => a + (s.M ? 1 : 0) + (s.T ? 1 : 0) + (s.N ? 1 : 0), 0);
+  const cells = [];
+  for (let i = 0; i < firstDay; i++) cells.push(null);
+  for (let d = 1; d <= days; d++) cells.push(d);
+  while (cells.length % 7 !== 0) cells.push(null);
+  const btn = (extra = {}) => ({ border: "none", borderRadius: 10, padding: "11px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 7, ...extra });
+  return /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 1050, margin: "0 auto" } }, /* @__PURE__ */ React.createElement("div", { style: { background: "linear-gradient(135deg,#0F172A,#312E81)", borderRadius: 20, padding: "24px 28px", marginBottom: 18, boxShadow: "0 4px 24px rgba(0,0,0,0.25)" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 14 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { color: "#A5B4FC", fontSize: 11, letterSpacing: 2, textTransform: "uppercase" } }, "Painel do Coordenador"), /* @__PURE__ */ React.createElement("div", { style: { color: "#F1F5F9", fontSize: 20, fontWeight: 700, marginTop: 2 } }, "Gest\xE3o de Turnos \xB7 ", MONTHS[month], " ", year), /* @__PURE__ */ React.createElement("div", { style: { color: "#64748B", fontSize: 12, marginTop: 1 } }, user.name)), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } }, /* @__PURE__ */ React.createElement("select", { value: month, onChange: (e) => setMonth(Number(e.target.value)), style: { background: "#1E293B", color: "#E2E8F0", border: "1px solid #4338CA", borderRadius: 8, padding: "7px 10px", fontSize: 13, fontFamily: "inherit" } }, MONTHS.map((m, i) => /* @__PURE__ */ React.createElement("option", { key: i, value: i }, m))), /* @__PURE__ */ React.createElement("select", { value: year, onChange: (e) => setYear(Number(e.target.value)), style: { background: "#1E293B", color: "#E2E8F0", border: "1px solid #4338CA", borderRadius: 8, padding: "7px 10px", fontSize: 13, fontFamily: "inherit" } }, [2025, 2026, 2027].map((y) => /* @__PURE__ */ React.createElement("option", { key: y, value: y }, y))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", background: "#1E293B", borderRadius: 8, overflow: "hidden", border: "1px solid #4338CA" } }, [["calendar", "\u{1F4C5} Cal."], ["list", "\u{1F4CB} Lista"], ["team", "\u{1F465} Equipa"]].map(([v, l]) => /* @__PURE__ */ React.createElement("button", { key: v, onClick: () => setView(v), style: { background: view === v ? "#4338CA" : "transparent", color: view === v ? "#fff" : "#94A3B8", border: "none", padding: "7px 12px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", fontWeight: 600 } }, l)))))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 9, marginBottom: 14, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("button", { onClick: handleAutoAssign, disabled: isRunning, style: btn({ background: "linear-gradient(135deg,#4338CA,#6D28D9)", color: "#fff", boxShadow: "0 4px 16px rgba(67,56,202,0.3)", opacity: isRunning ? 0.8 : 1 }) }, isRunning ? "\u23F3" : "\u26A1", " ", isRunning ? "A atribuir..." : "Atribui\xE7\xE3o Autom\xE1tica"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+    setSchedule(buildEmptySchedule(year, month));
+    onToast("Escala limpa.", "info");
+  }, style: btn({ background: "#fff", color: "#64748B", border: "1px solid #E2E8F0" }) }, "\u{1F5D1} Limpar"), /* @__PURE__ */ React.createElement("button", { onClick: onNotify, style: btn({ background: "#EFF6FF", color: "#1D4ED8", border: "1px solid #BFDBFE" }) }, "\u{1F514} Notificar equipa"), /* @__PURE__ */ React.createElement("button", { onClick: handleExportPDF, disabled: exporting === "pdf", style: btn({ background: "#FEF2F2", color: "#DC2626", border: "1px solid #FECACA" }) }, exporting === "pdf" ? "\u23F3" : "\u{1F4C4}", " Exportar PDF"), /* @__PURE__ */ React.createElement("button", { onClick: handleExportExcel, disabled: exporting === "xlsx", style: btn({ background: "#F0FDF4", color: "#15803D", border: "1px solid #BBF7D0" }) }, exporting === "xlsx" ? "\u23F3" : "\u{1F4CA}", " Exportar Excel"), autoLog && /* @__PURE__ */ React.createElement("button", { onClick: () => setAutoLog(null), style: btn({ background: "#F5F3FF", color: "#5B21B6", border: "1px solid #DDD6FE" }) }, "\u{1F4CB} Log (", autoLog.length, ")")), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 14 } }, [
+    { icon: "\u{1F469}\u200D\u2695\uFE0F", v: doctors.filter((d) => Object.values(allAvailabilities[d.name] || {}).some((v) => v !== "")).length, l: "Com disponibilidade" },
+    { icon: "\u2705", v: filled, l: "Turnos preenchidos" },
+    { icon: "\u26A0\uFE0F", v: days * 3 - filled, l: "Turnos em falta" },
+    { icon: "\u{1F4C5}", v: days, l: "Dias no m\xEAs" }
+  ].map((s, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { background: "#fff", borderRadius: 12, padding: "12px 16px", boxShadow: "0 1px 8px rgba(0,0,0,0.05)" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 18 } }, s.icon), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 22, fontWeight: 800, color: "#0F172A", margin: "2px 0" } }, s.v), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: "#94A3B8" } }, s.l)))), autoLog && /* @__PURE__ */ React.createElement("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }, onClick: () => setAutoLog(null) }, /* @__PURE__ */ React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { background: "#fff", borderRadius: 20, padding: 28, maxWidth: 540, width: "90%", maxHeight: "78vh", display: "flex", flexDirection: "column", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 16, fontWeight: 800, color: "#0F172A" } }, "\u26A1 Log da Atribui\xE7\xE3o"), /* @__PURE__ */ React.createElement("button", { onClick: () => setAutoLog(null), style: { background: "none", border: "none", fontSize: 18, cursor: "pointer", color: "#9CA3AF" } }, "\u2715")), /* @__PURE__ */ React.createElement("div", { style: { overflow: "auto", flex: 1 } }, autoLog.map((e, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { padding: "5px 10px", marginBottom: 3, borderRadius: 7, fontSize: 12, fontFamily: "monospace", background: e.type === "warn" ? "#FEF2F2" : e.type === "bundle" ? "#F5F3FF" : "#F0FDF4", color: e.type === "warn" ? "#DC2626" : e.type === "bundle" ? "#5B21B6" : "#15803D" } }, e.type === "warn" ? "\u26A0\uFE0F" : e.type === "bundle" ? "\u{1F517}" : "\u2713", " ", e.msg))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12, display: "flex", justifyContent: "space-between", fontSize: 12, color: "#9CA3AF" } }, /* @__PURE__ */ React.createElement("span", null, autoLog.filter((e) => e.type !== "warn").length, " atribu\xEDdos"), /* @__PURE__ */ React.createElement("span", null, autoLog.filter((e) => e.type === "warn").length, " sem cobertura")))), view === "calendar" ? /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 310px", gap: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", borderRadius: 16, boxShadow: "0 2px 12px rgba(0,0,0,0.06)", overflow: "hidden" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(7,1fr)", background: "#F8FAFC" } }, WEEKDAYS.map((w) => /* @__PURE__ */ React.createElement("div", { key: w, style: { textAlign: "center", padding: "9px 0", fontSize: 11, fontWeight: 700, color: "#64748B", letterSpacing: 1 } }, w))), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(7,1fr)" } }, cells.map((d, i) => {
+    if (!d) return /* @__PURE__ */ React.createElement("div", { key: `e${i}`, style: { borderTop: "1px solid #F1F5F9", minHeight: 78, background: "#FAFAFA" } });
+    const s = schedule[d] || {};
+    const isWeekend = [0, 6].includes(new Date(year, month, d).getDay());
+    return /* @__PURE__ */ React.createElement("div", { key: d, onClick: () => setSelectedDay(d), style: { borderTop: "1px solid #F1F5F9", borderLeft: i % 7 !== 0 ? "1px solid #F1F5F9" : "none", padding: 5, minHeight: 78, cursor: "pointer", background: selectedDay === d ? "#EEF2FF" : isWeekend ? "#FAFAFA" : "#fff", transition: "background 0.1s" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: isWeekend ? "#EF4444" : "#374151", marginBottom: 3 } }, d), ["M", "T", "N"].map((sh) => {
+      const meta = SHIFT_META[sh];
+      const name = s[sh];
+      return /* @__PURE__ */ React.createElement("div", { key: sh, style: { background: name ? meta.bg : "#F9FAFB", border: `1px solid ${name ? meta.border : "#E5E7EB"}`, borderRadius: 3, padding: "1px 3px", marginBottom: 2, fontSize: 9, color: name ? meta.text : "#D1D5DB", fontWeight: name ? 700 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, sh, " ", name ? name.split(" ").pop() : "\u2014");
+    }));
+  }))), /* @__PURE__ */ React.createElement("div", null, selectedDay ? /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", borderRadius: 16, boxShadow: "0 2px 12px rgba(0,0,0,0.06)", padding: 18 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 17, fontWeight: 800, color: "#0F172A" } }, "Dia ", selectedDay, " de ", MONTHS[month]), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: "#94A3B8", marginBottom: 14 } }, new Date(year, month, selectedDay).toLocaleDateString("pt-PT", { weekday: "long" })), ["M", "T", "N"].map((sh) => {
+    const meta = SHIFT_META[sh];
+    const avDocs = getAvailDoctors(selectedDay, sh);
+    const assigned = schedule[selectedDay]?.[sh];
+    return /* @__PURE__ */ React.createElement("div", { key: sh, style: { background: meta.bg, border: `1px solid ${meta.border}`, borderRadius: 10, padding: 12, marginBottom: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: meta.text, marginBottom: 7 } }, meta.icon, " ", meta.label, " \xB7 ", meta.time), assigned ? /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: "#0F172A" } }, assigned), /* @__PURE__ */ React.createElement("button", { onClick: () => assignDoctor(selectedDay, sh, null), style: { background: "none", border: "1px solid #E5E7EB", borderRadius: 6, padding: "2px 8px", fontSize: 11, cursor: "pointer", color: "#9CA3AF", fontFamily: "inherit" } }, "Remover")) : avDocs.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: "#9CA3AF" } }, "Nenhum m\xE9dico dispon\xEDvel") : /* @__PURE__ */ React.createElement("select", { onChange: (e) => e.target.value && assignDoctor(selectedDay, sh, e.target.value), style: { width: "100%", background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontFamily: "inherit", color: "#374151" } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Selecionar (", avDocs.length, " disp.)"), avDocs.map((doc) => /* @__PURE__ */ React.createElement("option", { key: doc.name, value: doc.name }, doc.name, " [", doc.initials, "] \u2014 ", countShifts(doc.name), " turnos"))));
+  })) : /* @__PURE__ */ React.createElement("div", { style: { background: "#F8FAFC", borderRadius: 16, padding: 24, textAlign: "center", border: "2px dashed #E2E8F0" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 32, marginBottom: 10 } }, "\u{1F446}"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: "#94A3B8" } }, "Clica num dia para gerir os turnos")), /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", borderRadius: 16, boxShadow: "0 2px 12px rgba(0,0,0,0.06)", padding: 16, marginTop: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "#374151", marginBottom: 10 } }, "Carga este m\xEAs"), doctors.map((doc) => {
+    const c = countShifts(doc.name);
+    return /* @__PURE__ */ React.createElement("div", { key: doc.name, style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 5 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: "#64748B", width: 30 } }, doc.initials), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, height: 6, background: "#F1F5F9", borderRadius: 3, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("div", { style: { width: `${Math.min(c * 7, 100)}%`, height: "100%", background: c > 10 ? "#F59E0B" : "#4338CA", borderRadius: 3 } })), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: "#374151", minWidth: 18, textAlign: "right" } }, c));
+  })))) : view === "list" ? /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", borderRadius: 16, boxShadow: "0 2px 12px rgba(0,0,0,0.06)", overflow: "hidden" } }, /* @__PURE__ */ React.createElement("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: "#F8FAFC" } }, ["Dia", "", "Manh\xE3 \u2600\uFE0F", "Tarde \u{1F324}", "Noite \u{1F319}"].map((h, i) => /* @__PURE__ */ React.createElement("th", { key: i, style: { padding: "11px 14px", textAlign: "left", fontSize: 11, fontWeight: 700, color: "#64748B", letterSpacing: 1, borderBottom: "1px solid #E2E8F0" } }, h)))), /* @__PURE__ */ React.createElement("tbody", null, Array.from({ length: days }, (_, i) => i + 1).map((d) => {
+    const s = schedule[d] || {};
+    const dayName = new Date(year, month, d).toLocaleDateString("pt-PT", { weekday: "short" });
+    const isWeekend = [0, 6].includes(new Date(year, month, d).getDay());
+    return /* @__PURE__ */ React.createElement("tr", { key: d, style: { background: isWeekend ? "#FAFAFA" : "#fff", borderBottom: "1px solid #F1F5F9" } }, /* @__PURE__ */ React.createElement("td", { style: { padding: "9px 14px", fontWeight: 700, color: "#0F172A" } }, d), /* @__PURE__ */ React.createElement("td", { style: { padding: "9px 14px", color: isWeekend ? "#EF4444" : "#94A3B8", fontWeight: isWeekend ? 700 : 400 } }, dayName), ["M", "T", "N"].map((sh) => {
+      const meta = SHIFT_META[sh];
+      const assigned = s[sh];
+      const avDocs = getAvailDoctors(d, sh);
+      return /* @__PURE__ */ React.createElement("td", { key: sh, style: { padding: "7px 14px" } }, assigned ? /* @__PURE__ */ React.createElement("span", { style: { background: meta.bg, color: meta.text, borderRadius: 20, padding: "3px 10px", fontWeight: 600, fontSize: 12, border: `1px solid ${meta.border}` } }, assigned.replace(/Dr[a]?\. /, "")) : /* @__PURE__ */ React.createElement("select", { onChange: (e) => e.target.value && assignDoctor(d, sh, e.target.value), style: { background: "#F9FAFB", border: "1px solid #E5E7EB", borderRadius: 8, padding: "4px 8px", fontSize: 11, fontFamily: "inherit", color: "#6B7280", maxWidth: 160 } }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014 ", avDocs.length, " disp."), avDocs.map((doc) => /* @__PURE__ */ React.createElement("option", { key: doc.name, value: doc.name }, doc.initials, " ", doc.name.split(" ").pop()))));
+    }));
+  })))) : (
+    /* team view */
+    /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", borderRadius: 16, boxShadow: "0 2px 12px rgba(0,0,0,0.06)", overflow: "hidden" } }, /* @__PURE__ */ React.createElement("div", { style: { padding: "16px 20px", borderBottom: "1px solid #F1F5F9", background: "#F8FAFC", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: "#0F172A" } }, "Gest\xE3o da Equipa"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: "#94A3B8", marginTop: 2 } }, allUsers.length, " membros")), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => {
+          setShowInvite(true);
+          setInviteError("");
+          setInviteForm({ name: "", specialty: "", initials: "", email: "", password: "" });
+        },
+        style: { background: "linear-gradient(135deg,#4338CA,#6D28D9)", color: "#fff", border: "none", borderRadius: 10, padding: "9px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }
+      },
+      "+ Convidar m\xE9dico"
+    )), /* @__PURE__ */ React.createElement("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 13 } }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", { style: { background: "#F8FAFC" } }, ["Nome", "Especialidade", "Sigla", "Papel", "Promover", "Remover"].map((h, i) => /* @__PURE__ */ React.createElement("th", { key: i, style: { padding: "11px 16px", textAlign: "left", fontSize: 11, fontWeight: 700, color: "#64748B", letterSpacing: 1, borderBottom: "1px solid #E2E8F0" } }, h)))), /* @__PURE__ */ React.createElement("tbody", null, allUsers.map((u, i) => /* @__PURE__ */ React.createElement("tr", { key: u.email, style: { borderBottom: "1px solid #F1F5F9", background: i % 2 === 0 ? "#fff" : "#FAFAFA" } }, /* @__PURE__ */ React.createElement("td", { style: { padding: "11px 16px", fontWeight: 600, color: "#0F172A" } }, u.name), /* @__PURE__ */ React.createElement("td", { style: { padding: "11px 16px", color: "#64748B" } }, u.specialty), /* @__PURE__ */ React.createElement("td", { style: { padding: "11px 16px" } }, /* @__PURE__ */ React.createElement("span", { style: { background: "#F1F5F9", color: "#374151", borderRadius: 6, padding: "2px 8px", fontWeight: 700, fontSize: 12, fontFamily: "monospace" } }, u.initials)), /* @__PURE__ */ React.createElement("td", { style: { padding: "11px 16px" } }, /* @__PURE__ */ React.createElement("span", { style: { background: u.role === "coordinator" ? "#EEF2FF" : "#F0FDF4", color: u.role === "coordinator" ? "#4338CA" : "#15803D", borderRadius: 20, padding: "3px 10px", fontSize: 12, fontWeight: 700 } }, u.role === "coordinator" ? "\u{1F451} Coord." : "\u{1F469}\u200D\u2695\uFE0F M\xE9dico")), /* @__PURE__ */ React.createElement("td", { style: { padding: "11px 16px" } }, u.role === "doctor" ? /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setConfirmTransfer({ name: u.name, email: u.email }),
+        style: { background: "#EEF2FF", color: "#4338CA", border: "1px solid #C7D2FE", borderRadius: 8, padding: "5px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }
+      },
+      "Promover"
+    ) : u.email === user.email ? /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, color: "#94A3B8", fontStyle: "italic" } }, "Tu") : /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, color: "#94A3B8" } }, "\u2014")), /* @__PURE__ */ React.createElement("td", { style: { padding: "11px 16px" } }, u.email !== user.email ? /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setConfirmRemove({ name: u.name, email: u.email }),
+        style: { background: "#FEF2F2", color: "#DC2626", border: "1px solid #FECACA", borderRadius: 8, padding: "5px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }
+      },
+      "Remover"
+    ) : /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, color: "#94A3B8" } }, "\u2014")))))))
+  ), confirmRemove && /* @__PURE__ */ React.createElement("div", { style: { position: "fixed", inset: 0, background: "rgba(15,23,42,0.6)", zIndex: 1e3, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 } }, /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", borderRadius: 20, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 64px rgba(0,0,0,0.3)" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 32, textAlign: "center", marginBottom: 12 } }, "\u{1F5D1}\uFE0F"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: "#0F172A", textAlign: "center", marginBottom: 8 } }, "Remover membro"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: "#64748B", textAlign: "center", marginBottom: 24, lineHeight: 1.6 } }, "Tens a certeza que queres remover ", /* @__PURE__ */ React.createElement("strong", null, confirmRemove.name), "?", /* @__PURE__ */ React.createElement("br", null), "Esta pessoa perde acesso imediatamente."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10 } }, /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      onClick: () => setConfirmRemove(null),
+      style: { flex: 1, background: "#F8FAFC", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 10, padding: 12, fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }
+    },
+    "Cancelar"
+  ), /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      onClick: () => {
+        onRemoveUser(confirmRemove.email);
+        setConfirmRemove(null);
+      },
+      style: { flex: 1, background: "#DC2626", color: "#fff", border: "none", borderRadius: 10, padding: 12, fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }
+    },
+    "Remover"
+  )))), showInvite && /* @__PURE__ */ React.createElement("div", { style: { position: "fixed", inset: 0, background: "rgba(15,23,42,0.6)", zIndex: 1e3, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 } }, /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", borderRadius: 20, padding: 32, maxWidth: 440, width: "100%", boxShadow: "0 24px 64px rgba(0,0,0,0.3)" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: "#0F172A", marginBottom: 4 } }, "Convidar m\xE9dico"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: "#94A3B8", marginBottom: 20 } }, "Preenche os dados e partilha as credenciais com o novo membro."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10 } }, [["name", "Nome completo", "text"], ["specialty", "Especialidade", "text"], ["email", "Email", "email"], ["password", "Password", "password"]].map(([f, ph, t]) => /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      key: f,
+      type: t,
+      placeholder: ph,
+      value: inviteForm[f],
+      onChange: (e) => setInviteForm((p) => ({ ...p, [f]: e.target.value })),
+      style: { width: "100%", background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 10, padding: "11px 14px", fontSize: 13, color: "#0F172A", fontFamily: "inherit", outline: "none", boxSizing: "border-box" }
+    }
+  )), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      type: "text",
+      placeholder: "Sigla (3 letras)",
+      maxLength: 3,
+      value: inviteForm.initials,
+      onChange: (e) => setInviteForm((p) => ({ ...p, initials: e.target.value.toUpperCase() })),
+      style: { width: "100%", background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 10, padding: "11px 14px", fontSize: 13, color: "#0F172A", fontFamily: "inherit", outline: "none", boxSizing: "border-box", textTransform: "uppercase" }
+    }
+  ), inviteError && /* @__PURE__ */ React.createElement("div", { style: { background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, padding: "9px 13px", color: "#DC2626", fontSize: 13 } }, inviteError)), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, marginTop: 20 } }, /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      onClick: () => setShowInvite(false),
+      style: { flex: 1, background: "#F8FAFC", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 10, padding: 12, fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }
+    },
+    "Cancelar"
+  ), /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      onClick: () => {
+        const f = inviteForm;
+        if (!f.name || !f.specialty || !f.initials || !f.email || !f.password) {
+          setInviteError("Preenche todos os campos.");
+          return;
+        }
+        if (f.initials.length !== 3) {
+          setInviteError("Sigla deve ter 3 letras.");
+          return;
+        }
+        if (!f.email.includes("@")) {
+          setInviteError("Email inv\xE1lido.");
+          return;
+        }
+        if (allUsers.find((u) => u.email === f.email)) {
+          setInviteError("Email j\xE1 registado.");
+          return;
+        }
+        onAddUser({ name: f.name, specialty: f.specialty, initials: f.initials.toUpperCase(), email: f.email, password: f.password, role: "doctor" });
+        setShowInvite(false);
+      },
+      style: { flex: 1, background: "linear-gradient(135deg,#4338CA,#6D28D9)", color: "#fff", border: "none", borderRadius: 10, padding: 12, fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }
+    },
+    "Adicionar \xE0 equipa"
+  )))), confirmTransfer && /* @__PURE__ */ React.createElement("div", { style: { position: "fixed", inset: 0, background: "rgba(15,23,42,0.6)", zIndex: 1e3, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 } }, /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", borderRadius: 20, padding: 32, maxWidth: 420, width: "100%", boxShadow: "0 24px 64px rgba(0,0,0,0.3)" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 32, textAlign: "center", marginBottom: 12 } }, "\u{1F451}"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 18, fontWeight: 800, color: "#0F172A", textAlign: "center", marginBottom: 8 } }, "Transferir papel de coordenador"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, color: "#64748B", textAlign: "center", marginBottom: 24, lineHeight: 1.6 } }, "Vais passar o papel de ", /* @__PURE__ */ React.createElement("strong", null, "Coordenador"), " para ", /* @__PURE__ */ React.createElement("strong", null, confirmTransfer.name), ".", /* @__PURE__ */ React.createElement("br", null), "Tu passas a ser ", /* @__PURE__ */ React.createElement("strong", null, "M\xE9dico"), " e perdes acesso ao painel de coordena\xE7\xE3o."), /* @__PURE__ */ React.createElement("div", { style: { background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 10, padding: "10px 14px", fontSize: 13, color: "#DC2626", marginBottom: 24, textAlign: "center" } }, "Esta a\xE7\xE3o s\xF3 pode ser revertida pelo novo coordenador."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10 } }, /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      onClick: () => setConfirmTransfer(null),
+      style: { flex: 1, background: "#F8FAFC", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 10, padding: 12, fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }
+    },
+    "Cancelar"
+  ), /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      onClick: () => {
+        onRoleChange(confirmTransfer.email, "coordinator");
+        setConfirmTransfer(null);
+      },
+      style: { flex: 1, background: "linear-gradient(135deg,#4338CA,#6D28D9)", color: "#fff", border: "none", borderRadius: 10, padding: 12, fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }
+    },
+    "Confirmar transfer\xEAncia"
+  )))));
+}
+function App() {
+  const today = /* @__PURE__ */ new Date();
+  const [user, setUser] = useState(null);
+  const [year, setYear] = useState(today.getFullYear());
+  const [month, setMonth] = useState(today.getMonth());
+  const [toast, setToast] = useState(null);
+  useEffect(() => {
+    if (!loadUsers().length) {
+      saveUsers([
+        { name: "Dr. Ana Ferreira", specialty: "Medicina Interna", initials: "ANF", email: "m\xE9dico@demo.pt", password: "demo123", role: "doctor" },
+        { name: "Dr. Bruno Costa", specialty: "Urg\xEAncia", initials: "BRC", email: "bruno@demo.pt", password: "demo123", role: "doctor" },
+        { name: "Dra. Catarina Silva", specialty: "Cardiologia", initials: "CAS", email: "cat@demo.pt", password: "demo123", role: "doctor" },
+        { name: "Dr. Diogo Mendes", specialty: "Cirurgia", initials: "DIM", email: "diogo@demo.pt", password: "demo123", role: "doctor" },
+        { name: "Dra. Elsa Rodrigues", specialty: "Medicina Interna", initials: "ELR", email: "elsa@demo.pt", password: "demo123", role: "doctor" },
+        { name: "Dr. Filipe Santos", specialty: "Urg\xEAncia", initials: "FIS", email: "filipe@demo.pt", password: "demo123", role: "doctor" },
+        { name: "Dra. Gra\xE7a Lopes", specialty: "Neurologia", initials: "GRL", email: "graca@demo.pt", password: "demo123", role: "doctor" },
+        { name: "Dr. Hugo Martins", specialty: "Ortopedia", initials: "HUM", email: "hugo@demo.pt", password: "demo123", role: "doctor" },
+        { name: "Dra. In\xEAs Carvalho", specialty: "Medicina Interna", initials: "INC", email: "ines@demo.pt", password: "demo123", role: "doctor" },
+        { name: "Dr. Jo\xE3o Pereira", specialty: "Urg\xEAncia", initials: "JOP", email: "joao@demo.pt", password: "demo123", role: "doctor" },
+        { name: "Dra. Lara Sousa", specialty: "Cardiologia", initials: "LAS", email: "lara@demo.pt", password: "demo123", role: "doctor" },
+        { name: "Dr. Miguel Nunes", specialty: "Cirurgia", initials: "MIN", email: "miguel@demo.pt", password: "demo123", role: "doctor" },
+        { name: "Dr. Coordenador", specialty: "Gest\xE3o Cl\xEDnica", initials: "CRD", email: "coord@demo.pt", password: "demo123", role: "coordinator" }
+      ]);
+    }
+  }, []);
+  const [allUsersState, setAllUsersState] = useState(() => loadUsers());
+  const allUsers = allUsersState.length ? allUsersState : loadUsers();
+  const doctors = allUsers.filter((u) => u.role === "doctor");
+  const rng = (s) => {
+    let x = Math.sin(s + 1) * 1e4;
+    return x - Math.floor(x);
+  };
+  const weighted = ["M", "M", "T", "T", "N", "MT", "MT", "MTN", "MN", "TN", "MT!", "", "", ""];
+  const [allAvailabilities, setAllAvailabilities] = useState(() => {
+    const obj = {};
+    const dms = loadUsers().filter((u) => u.role === "doctor");
+    dms.forEach((d, di) => {
+      const av = initAvail(today.getFullYear(), today.getMonth());
+      const days = getDaysInMonth(today.getFullYear(), today.getMonth());
+      for (let day = 1; day <= days; day++) {
+        const r = rng(di * 100 + day);
+        av[day] = r < 0.75 ? weighted[Math.floor(r * weighted.length)] : "";
+      }
+      obj[d.name] = av;
+    });
+    return obj;
+  });
+  const [schedule, setSchedule] = useState(() => buildEmptySchedule(year, month));
+  const [submitted, setSubmitted] = useState({});
+  const [historicShifts] = useState(() => {
+    const obj = {};
+    loadUsers().filter((u) => u.role === "doctor").forEach((d, i) => {
+      obj[d.name] = Math.floor(rng(i * 37) * 40) + 10;
+    });
+    return obj;
+  });
+  useEffect(() => {
+    setSchedule(buildEmptySchedule(year, month));
+  }, [year, month]);
+  const onToast = (msg, type = "info") => setToast({ msg, type });
+  function handleRoleChange(targetEmail) {
+    const updated = allUsers.map((u) => {
+      if (u.email === targetEmail) return { ...u, role: "coordinator" };
+      if (u.email === user.email) return { ...u, role: "doctor" };
+      return u;
+    });
+    saveUsers(updated);
+    setAllUsersState([...updated]);
+    const newCoord = updated.find((u) => u.email === targetEmail);
+    onToast(newCoord.name + " \xE9 agora Coordenador.", "info");
+    setUser((u) => ({ ...u, role: "doctor" }));
+  }
+  function handleRemoveUser(targetEmail) {
+    const removed = allUsers.find((u) => u.email === targetEmail);
+    const updated = allUsers.filter((u) => u.email !== targetEmail);
+    saveUsers(updated);
+    setAllUsersState([...updated]);
+    onToast(removed.name + " removido da equipa.", "info");
+  }
+  function handleAddUser(newUser) {
+    const updated = [...allUsers, newUser];
+    saveUsers(updated);
+    setAllUsersState([...updated]);
+    onToast(newUser.name + " adicionado \xE0 equipa!", "success");
+  }
+  function handleNotify() {
+    onToast(`\u{1F514} Notifica\xE7\xE3o enviada para ${doctors.length} m\xE9dicos: escala de ${MONTHS[month]} ${year} publicada.`, "success");
+  }
+  function handleAvailChange(day, value) {
+    setAllAvailabilities((prev) => ({ ...prev, [user.name]: { ...prev[user.name], [day]: value } }));
+  }
+  if (!user) return /* @__PURE__ */ React.createElement(AuthScreen, { onLogin: (u) => {
+    setUser(u);
+    onToast(`Bem-vindo, ${u.name}!`, "success");
+  } });
+  const isSubmitted = submitted[`${user.name}-${year}-${month}`];
+  return /* @__PURE__ */ React.createElement("div", { style: { minHeight: "100vh", background: "#F1F5F9", fontFamily: "'Segoe UI',system-ui,sans-serif", padding: "18px 14px" } }, /* @__PURE__ */ React.createElement("style", null, `@keyframes slideIn{from{transform:translateX(100px);opacity:0}to{transform:translateX(0);opacity:1}}`), /* @__PURE__ */ React.createElement("div", { style: { maxWidth: 1050, margin: "0 auto 14px", display: "flex", alignItems: "center", justifyContent: "space-between" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { width: 32, height: 32, background: "linear-gradient(135deg,#4338CA,#7C3AED)", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 } }, "\u{1F3E5}"), /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 800, color: "#0F172A", fontSize: 15 } }, "Turnos M\xE9dicos")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: "#64748B" } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700, color: "#374151" } }, user.name), " \xB7 ", /* @__PURE__ */ React.createElement("span", { style: { background: user.role === "coordinator" ? "#EEF2FF" : "#F0FDF4", color: user.role === "coordinator" ? "#4338CA" : "#15803D", borderRadius: 20, padding: "2px 8px", fontSize: 11, fontWeight: 700 } }, user.role === "coordinator" ? "Coordenador" : "M\xE9dico")), /* @__PURE__ */ React.createElement("button", { onClick: () => setUser(null), style: { background: "none", border: "1px solid #E2E8F0", borderRadius: 8, padding: "5px 12px", fontSize: 12, cursor: "pointer", color: "#64748B", fontFamily: "inherit" } }, "Sair"))), user.role === "coordinator" ? /* @__PURE__ */ React.createElement(
+    CoordinatorView,
+    {
+      user,
+      year,
+      month,
+      setYear,
+      setMonth,
+      allUsers,
+      doctors,
+      allAvailabilities,
+      schedule,
+      setSchedule,
+      historicShifts,
+      onNotify: handleNotify,
+      onToast,
+      onRoleChange: handleRoleChange,
+      onRemoveUser: handleRemoveUser,
+      onAddUser: handleAddUser
+    }
+  ) : /* @__PURE__ */ React.createElement(
+    DoctorView,
+    {
+      user,
+      year,
+      month,
+      setYear,
+      setMonth,
+      availability: allAvailabilities[user.name] || initAvail(year, month),
+      onAvailChange: handleAvailChange,
+      onSubmit: () => {
+        setSubmitted((p) => ({ ...p, [`${user.name}-${year}-${month}`]: true }));
+        onToast("Disponibilidades submetidas!", "success");
+      },
+      submitted: isSubmitted
+    }
+  ), toast && /* @__PURE__ */ React.createElement(Toast, { message: toast.msg, type: toast.type, onClose: () => setToast(null) }));
+}
+
+
+const container = document.getElementById("root");
+const root = ReactDOM.createRoot(container);
+root.render(React.createElement(App));
+
+</script>
+</body>
+</html>  { value: "M",    label: "Manhã",        icon: "☀️",   color: "#FEF3C7", text: "#92400E" },
   { value: "T",    label: "Tarde",        icon: "🌤",   color: "#DBEAFE", text: "#1E40AF" },
   { value: "N",    label: "Noite",        icon: "🌙",   color: "#EDE9FE", text: "#5B21B6" },
   { value: "MT",   label: "M ou T",       icon: "☀🌤", color: "#D1FAE5", text: "#065F46" },
