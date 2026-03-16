@@ -1047,6 +1047,19 @@ function App() {
 
   const onToast = (msg, type="info") => setToast({msg, type});
 
+  function handleRoleChange(targetEmail) {
+    const updated = allUsers.map(u => {
+      if (u.email === targetEmail) return { ...u, role: "coordinator" };
+      if (u.email === user.email) return { ...u, role: "doctor" };
+      return u;
+    });
+    saveUsers(updated);
+    setAllUsersState([...updated]);
+    const newCoord = updated.find(u => u.email === targetEmail);
+    onToast(newCoord.name + " é agora Coordenador.", "info");
+    setUser(u => ({ ...u, role: "doctor" }));
+  }
+
   function handleRemoveUser(targetEmail) {
     const removed = allUsers.find(u => u.email === targetEmail);
     const updated = allUsers.filter(u => u.email !== targetEmail);
